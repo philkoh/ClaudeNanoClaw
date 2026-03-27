@@ -1,0 +1,21 @@
+agents:
+  defaults:
+    sandbox:
+      docker:
+        image: ghcr.io/openclaw/openclaw:latest
+        network: "none"
+        readOnlyRoot: false
+      browser:
+        headless: true
+    model: claude-sonnet-4-6
+    apiProvider: anthropic
+    maxTokens: 4096
+    timeout: 600
+
+gateway:
+  host: 127.0.0.1
+  port: 3000
+
+logging:
+  level: info
+  file: /var/log/openclaw/sessions.log
