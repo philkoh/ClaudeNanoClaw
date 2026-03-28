@@ -1,0 +1,17 @@
+# Secrets — NEVER commit
+*.pem
+*.session
+.env
+.env.*
+credentials.*
+vault-key.*
+
+# Claude Code local state
+.claude/settings.local.json
+
+# Python virtual environment
+venv/
+
+# Benchmark temp output
+benchmarks/*.json
+/tmp/
