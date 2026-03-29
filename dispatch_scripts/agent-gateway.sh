@@ -38,6 +38,15 @@ case "$SCRIPT_PATH" in
     fi
     exec bash "$SCRIPT_PATH" $ARGS
     ;;
+  /home/ubuntu/dispatch/email-detail.sh)
+    # Args: [--interpret <base64_prompt>] <query> [max_results]
+    # Interpret prompt is base64-encoded to avoid quoting issues
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: email-detail.sh requires a search query" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
   /home/ubuntu/dispatch/web-search.sh)
     # Args: single quoted search query
     if [ -z "$ARGS" ]; then
