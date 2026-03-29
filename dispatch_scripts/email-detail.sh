@@ -49,4 +49,4 @@ T_SSH_DONE=$(date +%s%3N)
 LINES=$(echo "$RESULT" | wc -l)
 bash "$OPS_LOG" "Tier 3 email detail: vault=$((T_VAULT_DONE-T_VAULT))ms ssh+imap=$((T_SSH_DONE-T_SSH))ms total=$((T_SSH_DONE-T_START))ms mode=$MODE ($LINES lines, ${#RESULT} chars)"
 
-echo "$RESULT"
+echo "$RESULT" | bash "$(dirname "$0")/log-gemini-usage.sh" email-detail

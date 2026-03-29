@@ -20,6 +20,6 @@ RESULT=$(ssh tier3 "GMAIL_IMAP_USER='$IMAP_USER' GMAIL_IMAP_APP_PASSWORD='$IMAP_
 T_SSH_DONE=$(date +%s%3N)
 
 LINES=$(echo "$RESULT" | wc -l)
-bash "$OPS_LOG" "Tier 3 email triage: vault=${T_VAULT_DONE-T_VAULT}ms ssh+gemini=$((T_SSH_DONE-T_SSH))ms total=$((T_SSH_DONE-T_START))ms ($LINES lines, ${#RESULT} chars)"
+bash "$OPS_LOG" "Tier 3 email triage: vault=$((T_VAULT_DONE-T_VAULT))ms ssh+gemini=$((T_SSH_DONE-T_SSH))ms total=$((T_SSH_DONE-T_START))ms ($LINES lines, ${#RESULT} chars)"
 
-echo "$RESULT"
+echo "$RESULT" | bash "$(dirname "$0")/log-gemini-usage.sh" email-summary

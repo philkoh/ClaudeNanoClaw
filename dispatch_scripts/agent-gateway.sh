@@ -63,6 +63,14 @@ case "$SCRIPT_PATH" in
     fi
     exec bash "$SCRIPT_PATH" $ARGS
     ;;
+  /home/ubuntu/dispatch/usage-report.sh)
+    # Args: optional days (integer only)
+    if [ -n "$ARGS" ] && ! [[ "$ARGS" =~ ^[0-9]+$ ]]; then
+      echo "ERROR: usage-report.sh accepts only an integer day count" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
   /home/ubuntu/dispatch/ops-log.sh)
     # Args: message string
     if [ -z "$ARGS" ]; then

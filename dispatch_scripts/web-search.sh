@@ -19,4 +19,4 @@ T_SSH_DONE=$(date +%s%3N)
 
 bash "$OPS_LOG" "Tier 3 web search: vault=$((T_VAULT_DONE-T_VAULT))ms ssh+gemini=$((T_SSH_DONE-T_SSH))ms total=$((T_SSH_DONE-T_START))ms (${#RESULT} chars)"
 
-echo "$RESULT"
+echo "$RESULT" | bash "$(dirname "$0")/log-gemini-usage.sh" web-search
