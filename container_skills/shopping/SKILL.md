@@ -1,6 +1,6 @@
 ---
 name: shopping
-description: Search Amazon for products with price and delivery info. Two-step: Google discovery (free) then Rainforest API validation (real-time price/delivery for specific ASINs).
+description: Search Amazon for products with price and delivery info. Two-step: Google discovery (free) then RapidAPI Real-Time Amazon Data validation (real-time price/delivery for specific ASINs).
 ---
 
 # /shop — Amazon Product Search
@@ -22,18 +22,17 @@ Replace `<query>` with a product search query. Example: "Brother HL-L2350DW lase
 **Present the results as a numbered list** showing product title, approximate price, and ASIN. Then ask:
 > "Want me to check real-time price and delivery for any of these?"
 
-### Step 2 — Validation (on user request, via Rainforest API)
+### Step 2 — Validation (on user request, via RapidAPI)
 
 Get real-time Amazon data for specific ASINs the user selects:
 
 ```bash
-ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu/dispatch/product-validate.sh '<asin_list>' [zip]"
+ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu/dispatch/product-validate.sh '<asin_list>'"
 ```
 
 - `<asin_list>`: comma-separated ASINs (e.g., "B0DYTF8L2W,B09V3KXJPB")
-- `[zip]`: optional zip code for localized delivery estimates
 
-**Present validated results** showing: exact price, delivery date range, seller, shipper, rating.
+**Present validated results** showing: exact price, delivery info, availability, rating, Prime status.
 
 ## How to present results
 
@@ -55,7 +54,7 @@ ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu
 ## Security notes
 
 - Step 1 uses Gemini grounded search (same as /search skill) — no additional API cost
-- Step 2 uses Rainforest API — requires API key in vault (`rainforest-api`)
+- Step 2 uses RapidAPI Real-Time Amazon Data — requires API key in vault (`rapidapi`)
 - Both steps run on Tier 3 (untrusted content tier)
 - Output capped at 4000 characters per step
 - ASIN validation in agent-gateway restricts input to alphanumeric + commas only
