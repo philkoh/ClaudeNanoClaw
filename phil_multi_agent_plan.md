@@ -43,6 +43,7 @@ Prepared for review by:
 > **March 30, 2026:**
 > - Renamed tiers: Tier 1 → PhilClaw, Tier 2 → PortalClaw, Tier 3 → ReaderClaw (role names, distinct from underlying software)
 > - All 10/10 Telegram integration tests passing (email, search, usage, memory, multi-turn, restart persistence)
+> - Added Section 19: Guided Browsing Architecture — human-in-the-browser design for portal and shopping tasks that defeat bot detection using a home machine with residential IP, deterministic orchestrator (no LLM), and ReaderClaw analysis. Not yet implemented.
 
 ---
 
@@ -95,6 +96,8 @@ Prepared for review by:
 17. Open Questions & Risks — **[UPDATED]**
 
 18. Review Checklist by Reviewer Role
+
+19. Guided Browsing Architecture — **[PLANNED]**
 
 Appendix: Remaining User Actions — **[NEW]**
 
@@ -161,6 +164,7 @@ The system consists of three separate virtual machine instances communicating vi
 | Tier 2 | PortalClaw (Portal) | 52.70.246.155 | 4 GB RAM / 2 vCPU | Ubuntu 24.04 LTS |
 | Tier 3 | ReaderClaw (Email/Web) | 13.218.4.41 | 4 GB RAM / 2 vCPU | Ubuntu 24.04 LTS |
 | Admin Workstation | Claude Code dev/test | 100.49.113.22 | 4 GB RAM / 2 vCPU | Ubuntu 24.04 LTS |
+| Home Browse Machine | Guided Browsing orchestrator (Section 19) | Residential IP (TBD) | Any (Chrome + Node.js) | Ubuntu 24.04 LTS | **[PLANNED]** |
 
 **Data flow summary:**
 
@@ -955,6 +959,8 @@ The following catalog represents the initial target capability set, organized by
 
 - Consider adding a second Tier 2 instance for parallel portal sessions
 
+- **Guided Browsing (Section 19):** Provision Home Browse Machine with residential IP, deploy Browse Orchestrator, configure PhilClaw→home SSH tunnel, install Chrome DevTools MCP on ReaderClaw. Build navigation recipes for priority portals. Set up iPhone Share Sheet shortcut as mobile fallback.
+
 
 # 16. Monthly Cost Estimate
 
@@ -1347,9 +1353,9 @@ Returns per ASIN:
 | Gemini search dependency          | The system depends on Gemini’s native search grounding working outside Docker. If Google changes this, Tier 3 may break.                                  | **[UNCHANGED]** Risk accepted. Tier 3 uses Gemini 2.5 Flash with grounded search. Monitor for API changes. |
 | NanoClaw maturity                 | NanoClaw is under active development by a small team.                                                                                                     | **[UPDATED]** Running NanoClaw v1.2.17 with claude-agent-sdk v0.2.76. Has proven stable through testing. Keep version pinned. |
 | Prompt injection evolution        | Attackers are developing increasingly sophisticated multi-step injection attacks. Current defenses are not foolproof.                                     | **[UNCHANGED]** Architecture assumes Tier 3 compromise. Defense relies on structural isolation. Prompt injection test passed (5/5). |
-| Portal UI changes                 | Web portals update their interfaces, which can break headless browser automation.                                                                         | **[UNCHANGED]** Risk accepted. OpenClaw browser tool needs configuration on PortalClaw for real portals. |
+| Portal UI changes                 | Web portals update their interfaces, which can break headless browser automation.                                                                         | **[UPDATED]** Section 19 addresses this with multi-signal selector bundles and ReaderClaw semantic recovery for self-healing navigation recipes. |
 | SDK cold-start latency            | The Claude Code Agent SDK added ~105s of dead time per query due to DNS timeouts in network-isolated containers.                                          | **[RESOLVED]** Fixed March 27 via `--dns 127.0.0.1` + `DISABLE_NONESSENTIAL_TRAFFIC`. See Section 16B. |
-| OpenClaw browser on PortalClaw    | OpenClaw’s browser tool does not function inside Docker containers (gateway not running). Falls back to web_fetch.                                        | **[OPEN]** Real portal logins needing interactive form navigation will need browser automation configured. May require gateway process or alternative approach. |
+| OpenClaw browser on PortalClaw    | OpenClaw’s browser tool does not function inside Docker containers (gateway not running). Falls back to web_fetch.                                        | **[UPDATED]** Section 19 (Guided Browsing) provides an alternative: a Home Browse Machine with residential IP and real Chrome, bypassing both the Docker browser bug and datacenter IP bot detection. PortalClaw remains available for simple API-based portal tasks. |
 | Gemini billing                    | No spending cap configured in Google AI Studio.                                                                                                           | **[OPEN]** User should set a budget alert in Google AI Studio to prevent runaway costs (architecture flaw F3). |
 | Vault backup                      | Single point of failure on vault encryption key.                                                                                                          | **[OPEN]** User should back up `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location (architecture flaw F5). |
 | Email unsubscribe automation      | User wants PhilClaw to auto-unsubscribe from bulk senders. RFC 8058 headers survive Gmail forwarding.                                                     | **[PENDING]** Investigation complete. Implementation of `unsubscribe.sh` dispatch not yet started. |
@@ -1402,6 +1408,316 @@ Returns per ASIN:
 
 - Cloud infrastructure costs may be deductible as a business expense if used for work; consult tax advisor on classification.
 
+---
+
+# 19. Guided Browsing Architecture — **[PLANNED]**
+
+This section addresses a fundamental limitation discovered during implementation: PortalClaw's headless browser cannot defeat modern bot detection systems (Amazon, many bank portals, government sites), and many high-value websites require a real browser with a residential IP and genuine human interaction to function. The solution is a "human-in-the-browser" architecture where the AI plans and analyzes, a deterministic script orchestrates, and the human provides proof-of-life — all while maintaining the three-tier security boundary.
+
+## 19.1 The Problem
+
+Three converging issues make headless browser automation insufficient for many real-world portal and shopping tasks:
+
+**Bot detection is too sophisticated.** Amazon and similar sites use six-layer defenses: IP reputation/ASN analysis, TLS fingerprinting (JA3/JA4), browser environment detection (Canvas/WebGL/AudioContext), behavioral biometrics (mouse curves, scroll velocity), active CAPTCHAs, and ML anomaly detection. Traffic from datacenter IPs (including all AWS Lightsail addresses) is flagged 20–50x more often than residential traffic. PortalClaw's browser tool running on a Lightsail VM will be blocked almost immediately.
+
+**PortalClaw's browser does not work in Docker.** As documented in Section 17, the OpenClaw browser tool fails inside NanoClaw's container isolation because the browser gateway process is not running. This means PortalClaw currently falls back to `web_fetch` for portal access, which cannot handle JavaScript-rendered pages, login flows, or CAPTCHAs.
+
+**No consumer APIs exist for key services.** Amazon has no consumer-facing API for order history or product search. Amazon Rufus has no programmatic interface. The Selling Partner API is seller-only. Login with Amazon OAuth scopes are limited to profile data. The current `/shop` skill (Section 16G) uses Google discovery + RapidAPI for product search, but cannot browse Amazon directly, view order history, or interact with authenticated Amazon pages.
+
+## 19.2 The Four-Layer Architecture
+
+The guided browsing system is designed around a single security principle: **the LLM that has credentials (PhilClaw) NEVER sees web content. The LLM that sees web content (ReaderClaw) has NO credentials. The component touching both browser and plan (the orchestrator) has NO LLM.**
+
+### Layer 1: PhilClaw — The Planner
+
+PhilClaw accumulates a browsing to-do list throughout the day from user requests, scheduled checks, and other task pipelines. Before the daily browsing session, it compiles these into a deterministic browsing plan — a structured JSON file containing URLs, form-fill data, extraction targets, and success criteria:
+
+```json
+{
+  "session_id": "2026-04-15-morning",
+  "tasks": [
+    {
+      "id": "task-1",
+      "type": "amazon_search",
+      "url": "https://www.amazon.com/s?k=creality+ender+3+glass+bed+235x235mm",
+      "criteria": {"max_price": 25, "min_rating": 4.0, "prefer_prime": true},
+      "capture": "full_dom",
+      "analyze_with": "tier3"
+    },
+    {
+      "id": "task-2",
+      "type": "portal_login",
+      "url": "https://portal.landlordsite.com/login",
+      "recipe_id": "landlord_portal_v3",
+      "prefill": {"username_field": "input#email", "username": "phil@emtera.com"},
+      "human_required": ["password"],
+      "capture_target": "current_balance"
+    }
+  ]
+}
+```
+
+PhilClaw generates this plan, pushes it to the Home Browse Machine via SSH/SCP, and notifies the user via Telegram that the browsing session is ready. PhilClaw never sees a single byte of web content — it produces the plan and later receives only structured results (product names, prices, account balances — never raw HTML).
+
+### Layer 2: Browse Orchestrator (Deterministic Script, No LLM)
+
+The Browse Orchestrator is a Node.js script (~200–400 lines) running on the Home Browse Machine. It reads the plan JSON and drives Chrome via the Chrome DevTools Protocol (CDP) using `chrome-remote-interface` or `puppeteer-core`. It is purely deterministic — no LLM, no prompt processing, no natural language understanding, no ability to be prompt-injected.
+
+The orchestrator can:
+
+- Open all tabs simultaneously at session start (pre-loading URLs from the plan)
+- Navigate between pages via `Page.navigate()`
+- Pre-fill form fields with data from the plan via `Runtime.evaluate()`
+- Scroll pages to load dynamic/lazy content
+- Capture full DOM snapshots via `document.documentElement.outerHTML`
+- Inject CSS highlight overlays for human guidance (glowing borders, floating instruction text)
+- Wait for human interaction (click events, keyboard input) on pages that need them
+- Record a structured action log of every step taken (see Section 19.4)
+- Send captured HTML to ReaderClaw (NOT PhilClaw) for analysis via SCP
+
+**This is the critical security boundary.** The orchestrator handles untrusted web content but cannot be prompt-injected because it contains no LLM. It does not interpret, reason about, or make decisions based on page content. Malicious text in an Amazon product description or a portal page has no effect on a script that treats all DOM content as opaque bytes to be captured and forwarded.
+
+### Layer 3: ReaderClaw — The Content Analyzer
+
+Captured DOM snapshots are sent from the orchestrator to ReaderClaw (Tier 3) via SCP. ReaderClaw's Gemini instance parses the HTML and extracts structured data — product names, prices, ratings, ASIN codes, Prime eligibility for Amazon; account balances, invoice amounts, due dates for portals.
+
+ReaderClaw may also use Chrome DevTools MCP (Google's official MCP server for Chrome) for advanced page analysis — loading captured snapshots into a local Chromium instance for DOM inspection and screenshot-based visual analysis. This is useful for first-visit exploration and layout-change recovery (see Section 19.5).
+
+Even if prompt injection is present in the captured web content, ReaderClaw has no credentials, no vault access, no Telegram access, and no ability to take actions on other tiers. The worst case is a corrupted extraction result (e.g., wrong price), which PhilClaw presents to the user for confirmation anyway.
+
+ReaderClaw returns structured JSON to PhilClaw via the existing sanitized SSH/SCP pipeline:
+
+```json
+{
+  "task_id": "task-1",
+  "results": [
+    {"rank": 1, "name": "Creality Official Glass Plate", "price": 15.99,
+     "rating": 4.5, "prime": true, "asin": "B07X3WBNPB"},
+    {"rank": 2, "name": "Comgrow 2-Pack Borosilicate", "price": 22.99,
+     "rating": 4.3, "prime": true, "asin": "B08K2HNXL4"}
+  ],
+  "recommendation": "rank_1"
+}
+```
+
+### Layer 4: PhilClaw — The Presenter
+
+PhilClaw receives only structured JSON — product names, prices, numbers, status messages. Never raw HTML, never review text, never product descriptions. It formats the results and presents them via Telegram:
+
+```
+Browsing session complete (3 tasks, 47 seconds)
+
+Task 1 — Amazon glass bed plate:
+  Best match: Creality Official, $15.99, ★4.5, Prime ✓
+  Runner-up: Comgrow 2-Pack, $22.99, ★4.3, Prime ✓
+  Reply "1" to buy or "2" for the alternative.
+
+Task 2 — Landlord portal:
+  Current balance: $0.00 (paid through March)
+```
+
+If the user replies "1", PhilClaw constructs a direct Amazon product link and sends it via Telegram. The user taps it and completes the purchase on their own device.
+
+## 19.3 The Home Browse Machine
+
+The Browse Orchestrator and Chrome must run on a machine with a **residential IP address** — not on any Lightsail VM, not on any cloud provider. Anti-bot systems identify datacenter IPs at the ASN level before any other detection kicks in. AWS IP ranges (AS16509, AS14618) are among the most heavily flagged.
+
+### Hardware Requirements
+
+The machine does not need to be powerful. Chrome and a Node.js script are lightweight:
+
+| Option | Cost | Notes |
+|--------|------|-------|
+| Used Dell Optiplex | $50–100 | Common on eBay, silent, small form factor |
+| Intel NUC | $80–150 | Very compact, fanless models available |
+| Raspberry Pi 5 | $80 | Runs Chromium adequately, minimal power draw |
+| Existing home PC/laptop | $0 | If always on or woken via Wake-on-LAN |
+
+The machine runs Ubuntu 24.04 LTS with Chrome, Node.js, and an SSH server. PhilClaw connects to it via SSH (the home machine's SSH port is forwarded through the home router, or accessible via a Tailscale/WireGuard VPN tunnel).
+
+### Network Configuration
+
+- Chrome remote debugging bound to `127.0.0.1:9222` (localhost only — not exposed to the network)
+- The orchestrator connects to Chrome via localhost WebSocket
+- PhilClaw accesses the machine via SSH tunnel only
+- No inbound HTTP ports opened on the home router
+- The home machine's residential IP is what Amazon and other sites see when Chrome browses
+
+### When the Home Machine Is Unavailable
+
+If the machine is powered off or unreachable, PhilClaw falls back gracefully:
+
+- **For shopping:** The existing `/shop` pipeline (Section 16G) continues to work — Google discovery + RapidAPI validation does not require a residential IP or browser.
+- **For general browsing:** PhilClaw sends plain links to the user via Telegram. The user browses on their phone and optionally shares screenshots or information back.
+- **For portal checks:** Tasks remain in the to-do list for the next session. No tasks are lost.
+
+## 19.4 Session Memory: Learning Navigation Sequences
+
+The orchestrator records a structured action log after every session. This log contains selectors, URLs, timing, and success/failure indicators — but **no page content, no review text, no product descriptions**. It is structured data that PhilClaw can safely read without prompt injection risk.
+
+```json
+{
+  "site": "landlord_portal",
+  "domain": "portal.landlordsite.com",
+  "session_date": "2026-04-15",
+  "steps": [
+    {"action": "navigate", "url": "/login", "load_time_ms": 1800},
+    {"action": "fill", "selector": "input#email", "value": "[CREDENTIAL_REF]"},
+    {"action": "human_input", "selector": "input#password", "wait_ms": 4200},
+    {"action": "click", "selector_bundle": ["button.login-btn",
+      "button[type='submit']", "//button[contains(text(),'Log')]"],
+      "matched": "button.login-btn"},
+    {"action": "navigate_detected", "url": "/dashboard", "load_time_ms": 2100},
+    {"action": "click", "selector_bundle": ["a[href='/invoices']",
+      "//a[contains(text(),'Invoice')]"], "matched": "a[href='/invoices']"},
+    {"action": "capture", "extracted": {"balance": "$0.00"}}
+  ],
+  "total_time_ms": 14200,
+  "human_interactions": 1,
+  "success": true
+}
+```
+
+Over successive sessions, PhilClaw builds a library of **navigation recipes** — proven step-by-step paths through each site. On the first visit to a portal, PhilClaw's plan is vague ("go to landlord portal, find the balance"). After a successful session, PhilClaw has the exact recipe and generates a precise plan the next time. The orchestrator replays the recipe at machine speed, pausing only where human input is needed.
+
+| Visit | Behavior | Typical Duration |
+|-------|----------|------------------|
+| 1st | Exploratory: ReaderClaw analyzes each page, proposes navigation | 60–90 seconds |
+| 2nd | Recipe replay with ReaderClaw verification | 20–30 seconds |
+| 5th+ | Recipe replay, deterministic, no ReaderClaw calls | 8–15 seconds |
+
+## 19.5 Adaptive Self-Healing: Handling Layout Changes
+
+When a website redesigns, hard-coded CSS selectors break. The system uses three strategies in cascade, with increasing AI involvement:
+
+### Strategy 1: Multi-Signal Selector Bundles (Deterministic)
+
+Each recipe step stores a selector bundle — multiple ways to find the same element:
+
+```json
+{
+  "target": "login_button",
+  "selectors": [
+    {"type": "css", "value": "button.login-btn", "confidence": 0.95},
+    {"type": "css", "value": "button[type='submit']", "confidence": 0.80},
+    {"type": "xpath_text", "value": "//button[contains(text(),'Log')]", "confidence": 0.85},
+    {"type": "aria", "value": "[role='button'][name*='log' i]", "confidence": 0.75}
+  ]
+}
+```
+
+The orchestrator tries selectors in confidence order. If `button.login-btn` fails after a redesign, it falls through to text-based or ARIA-based selectors. This handles minor CSS class renames with no AI involvement.
+
+### Strategy 2: ReaderClaw Semantic Recovery (AI-Powered, On Failure)
+
+When ALL selectors in the bundle fail, the orchestrator enters recovery mode:
+
+1. Orchestrator captures the current page DOM
+2. Orchestrator SCPs the DOM to ReaderClaw with a structured recovery request: `{"find": "login submit button", "previous_selectors": [...]}`
+3. ReaderClaw's Gemini analyzes the page semantically — understanding what a login button looks like regardless of CSS classes
+4. ReaderClaw returns new selectors as structured JSON
+5. Orchestrator retries with new selectors; on success, updates the recipe
+
+**Security property:** ReaderClaw does the semantic reasoning on untrusted content but only returns structured selectors — never raw page content — to PhilClaw. PhilClaw updates the recipe without ever seeing the HTML that prompted the change.
+
+Recovery latency: ~6–8 seconds per broken step (DOM capture → SCP to ReaderClaw → Gemini analysis → new selectors returned → orchestrator retry). The user sees a brief pause during the session, but it self-resolves.
+
+### Strategy 3: Semantic Extraction for Data (No Selectors Needed)
+
+For extracting data (as opposed to navigating), CSS selectors can be skipped entirely. Instead of telling ReaderClaw "get text from `div.balance-summary`", the plan specifies intent: `"capture_target": "current_balance"`. ReaderClaw uses semantic understanding to locate the data regardless of DOM structure.
+
+### Self-Healing Over Time
+
+After each successful recovery, the new selectors are added to the bundle as high-confidence entries, and the old broken selectors are demoted (not removed — they may work again after a future redesign reverts). Over months of use, each recipe accumulates a rich selector library across multiple site redesigns, and the orchestrator rarely needs to invoke ReaderClaw for recovery.
+
+## 19.6 Chrome DevTools MCP Integration
+
+Google's official Chrome DevTools MCP server provides tools for navigation, DOM inspection, JavaScript execution, screenshots, and more — all exposed via the Model Context Protocol. It is used in this architecture **exclusively on ReaderClaw, never on PhilClaw**.
+
+### Tool Usage
+
+| Tool | Purpose in Our Architecture |
+|------|----------------------------|
+| `navigate_page` | ReaderClaw explores captured pages in its local Chromium |
+| `take_snapshot` | DOM state capture for layout analysis |
+| `take_screenshot` | Visual analysis for ambiguous layouts |
+| `evaluate_script` | Run JS to locate elements by semantic meaning |
+| `click`, `fill` | Test proposed selectors before returning them |
+
+### Where MCP Is Used vs. Not Used
+
+| Role | Component | MCP? | Reason |
+|------|-----------|------|--------|
+| Planning | PhilClaw | **NEVER** | PhilClaw must never connect to any browser. Raw web content in context window = prompt injection vector. |
+| Driving the real browser | Orchestrator (home machine) | **NO** | Orchestrator uses raw CDP, not MCP. It is deterministic — no LLM, no MCP client. |
+| Analyzing captured pages | ReaderClaw | **YES** | ReaderClaw uses MCP to explore and understand captured DOM. Safe: ReaderClaw has no credentials. |
+
+### Configuration on ReaderClaw
+
+Chrome DevTools MCP would be installed on ReaderClaw as part of the Gemini analysis pipeline. The `--slim` flag limits the tool set to navigation, script execution, and screenshots — sufficient for page analysis without exposing unnecessary debugging tools.
+
+## 19.7 Daily Browsing Session Flow
+
+A typical morning session with three tasks:
+
+1. **Preparation** (automatic, before user wakes): PhilClaw compiles the browsing to-do list from accumulated tasks. Pushes plan JSON to home machine via SSH. Sends Telegram notification: *"3 browsing tasks queued. Open Chrome when ready."*
+
+2. **User triggers session** (~5 seconds): User taps a desktop shortcut (or VNCs in from phone) that launches the orchestrator script. Chrome opens with all tabs pre-loaded simultaneously.
+
+3. **Automation runs** (~10 seconds): Tab 1 (Amazon search) loads, orchestrator captures DOM. Tab 2 (landlord portal) loads, orchestrator pre-fills username. Tab 3 (Amazon product page) loads, orchestrator captures DOM.
+
+4. **Human provides proof-of-life** (~20–30 seconds): User glances at Tab 1 (results look right, no action needed — already captured). Switches to Tab 2 (types password, hits Enter). Portal loads, orchestrator captures. Tab 3 was fully automatic.
+
+5. **Analysis** (~10 seconds): Orchestrator SCPs three DOM captures to ReaderClaw. ReaderClaw parses all three with Gemini (parallel if possible). Returns structured JSON to PhilClaw.
+
+6. **Presentation** (~2 seconds): PhilClaw formats results and sends via Telegram. User reads the summary on their phone over coffee.
+
+Total human involvement: ~30 seconds. Total wall-clock time: ~60 seconds.
+
+## 19.8 iPhone Fallback: Human-in-the-Browser via Safari
+
+When the home machine is unavailable or for ad-hoc browsing requests outside the daily session, an iPhone-based fallback provides a lighter-weight alternative.
+
+### Setup
+
+- **Safari Profiles** (iOS 17+): Create a dedicated "Assistant" profile in Safari (Settings → Safari → New Profile) with a distinct icon. Install the SingleFile extension in this profile only. Normal browsing stays in the Default profile.
+- **Telegram configured for Safari:** In Telegram → Settings → Data and Storage → Browser, select Safari. Links from Telegram open in Safari.
+
+### Workflow Options (Ranked by Tap Count)
+
+| Approach | Taps | Setup Effort | Capability |
+|----------|------|-------------|------------|
+| Link + screenshot to Telegram | 3 | Zero | Search results, visual only |
+| Link + Share Sheet Shortcut (Run JavaScript → SSH upload) | 2 | 15 minutes | Full rendered HTML of current page |
+| Link + custom Safari extension (auto-capture on URL parameter) | 1 | 2–3 days (Xcode + Apple Dev account) | Full DOM, auto-uploaded via Telegram Bot API |
+
+The 2-tap Share Sheet approach is recommended as the starting point: create an iOS Shortcut that runs `document.documentElement.outerHTML` on the current Safari page and uploads the result to PhilClaw via the "Run Script Over SSH" action.
+
+### Security Notes
+
+- iPhone browsing uses a mobile carrier IP, which has the highest trust score of any IP type for anti-bot systems — even better than residential.
+- Captured HTML from the phone should be routed to ReaderClaw for analysis (not PhilClaw) to maintain the security boundary, using the same pipeline as the desktop guided browsing flow.
+
+## 19.9 Relationship to Existing Systems
+
+| Capability | Current Approach | With Guided Browsing |
+|-----------|-----------------|---------------------|
+| Amazon product search | `/shop` skill: Google discovery + RapidAPI validation (Section 16G) | `/shop` remains the default for product lookup. Guided browsing adds ability to browse Amazon directly, view order history, track shipments. |
+| Portal login | PortalClaw headless browser via OpenClaw (Section 5) — blocked by Docker browser bug and datacenter IP detection | Home Browse Machine with residential IP and real Chrome. PortalClaw remains available for simple API-based portal tasks that don't need a browser. |
+| 2FA portals | Planned batch interactive sessions (Section 13.3) | Guided browsing subsumes this — 2FA portals are handled naturally during the daily session with human-in-the-browser providing the codes. |
+| Web content analysis | ReaderClaw Gemini SDK scripts | ReaderClaw gains Chrome DevTools MCP for richer DOM analysis of captured pages. |
+
+## 19.10 Security Summary
+
+| Property | How It Is Maintained |
+|----------|---------------------|
+| PhilClaw never sees web content | PhilClaw produces plan JSON and receives result JSON. No raw HTML ever enters PhilClaw's context. |
+| ReaderClaw never has credentials | ReaderClaw analyzes DOM snapshots but has no vault access, no SSH keys to other tiers, no Telegram access. |
+| Orchestrator cannot be prompt-injected | Pure deterministic Node.js — no LLM, no prompt processing, no natural language interpretation. |
+| Credential isolation | Credentials referenced in plans use `[CREDENTIAL_REF]` placeholders. The orchestrator receives actual values from PhilClaw via SSH env vars at session start, never from web content. |
+| Home machine is minimal attack surface | No inbound HTTP. SSH only from PhilClaw. Chrome debugging on localhost only. No stored credentials beyond SSH authorized_keys for PhilClaw. |
+
+
 *END OF DOCUMENT (March 30, 2026)*
 
 ---
@@ -1418,3 +1734,4 @@ The following items require action from the user (Philip Koh) and cannot be comp
 6. **Remove temp:admin SSH** — Remove UFW rule on Tier 2 for 100.36.24.89 when no longer needed for testing. Also allowed on Tier 1 — may be stale now that admin workstation is 100.49.113.22.
 7. **Configure scheduled tasks** — ~~Heartbeat: DONE (Section 16F).~~ Still pending: daily morning briefing cron, weekly portal checks via NanoClaw `schedule_task` MCP tool
 8. **Configure VM rebuild crons** — Nightly ReaderClaw rebuild, weekly PortalClaw rebuild schedules on PhilClaw
+9. **Provision Home Browse Machine** (Section 19) — Acquire small-form-factor PC or repurpose existing home machine. Install Ubuntu 24.04 + Chrome + Node.js. Configure SSH access from PhilClaw (port forward or VPN tunnel). Set up iPhone Safari Share Sheet shortcut for mobile fallback.
