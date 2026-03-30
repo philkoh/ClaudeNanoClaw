@@ -90,6 +90,8 @@ Prepared for review by:
 
 16E. Persistent Memory System (March 29, 2026) — **[NEW]**
 
+16F. Heartbeat System (March 30, 2026) — **[NEW]**
+
 17. Open Questions & Risks — **[UPDATED]**
 
 18. Review Checklist by Reviewer Role
@@ -277,7 +279,7 @@ Current vault entries (4 total):
 6. Usage report: aggregates Anthropic proxy + Gemini dispatch usage logs
 7. Prompt injection resistance: correctly treats Tier 2/3 output as untrusted data
 
-**[PENDING]** Scheduled tasks: daily morning briefing cron, weekly portal checks, monthly invoice reminders — NanoClaw supports cron via the `schedule_task` MCP tool but no schedules are configured yet.
+**[PARTIAL]** Scheduled tasks: Heartbeat daemon is live (every 15 min via systemd timer — see Section 16F). Daily morning briefing cron, weekly portal checks, monthly invoice reminders still pending — NanoClaw supports cron via the `schedule_task` MCP tool but no schedules are configured yet.
 
 
 # 5. Tier 2: PortalClaw — The Authenticated Portal Agent
@@ -916,6 +918,8 @@ The following catalog represents the initial target capability set, organized by
 
 - ~~Test web search pipeline: user asks question → Tier 3 searches → Tier 1 presents~~ **[DONE]** — Working end-to-end. Gemini grounded search with Google Search tool, source citations. ~32s warm response.
 
+- ~~Set up heartbeat health monitoring~~ **[DONE]** — Heartbeat daemon deployed (March 30). Checks: NanoClaw service, Tier 2/3 SSH, disk, Docker, memory reminders. Runs every 15 min via systemd timer. Sends Telegram alert only when issues detected. See Section 16F.
+
 - Set up daily morning briefing cron job **[PENDING]** — NanoClaw supports `schedule_task` MCP tool but no schedules configured yet.
 
 - Monitor for false positives, missed urgency flags, hallucinated content **[ONGOING]**
@@ -1174,6 +1178,98 @@ Updated `CLAUDE.md` in the group workspace to instruct the agent to:
 - No automatic post-turn fact extraction (agent follows CLAUDE.md instructions, not built-in hooks)
 
 
+# 16F. Heartbeat System (March 30, 2026)
+
+**[IMPLEMENTED]** Host-level heartbeat daemon inspired by OpenClaw's heartbeat, adapted for PhilClaw's security architecture.
+
+## 16F.1 Design Philosophy
+
+Unlike OpenClaw's heartbeat (which runs a full LLM agent session on every cycle), PhilClaw's heartbeat is a lightweight bash script that runs at the host level on Tier 1. This design choice:
+
+- **Zero API cost** per heartbeat cycle (no LLM session unless an issue needs investigation)
+- **Fast execution** (~2 seconds per cycle vs. 30+ seconds for a container agent session)
+- **Host-level trust** — runs directly on Tier 1, not inside a container, so it has full access to dispatch scripts and SSH
+- **No memory pollution** — heartbeat activity doesn't touch the agent's memory files or conversation history
+
+## 16F.2 Architecture
+
+```
+systemd timer (every 15 min)
+    → heartbeat.sh
+        ├─ Check NanoClaw service status
+        ├─ SSH ping Tier 2 (PortalClaw)
+        ├─ SSH ping Tier 3 (ReaderClaw)
+        ├─ Check disk usage (threshold: 85%)
+        ├─ Check Docker daemon status
+        ├─ Scan MEMORY.md for reminders due today
+        ├─ Log result to dispatch.log
+        └─ If issues found → send Telegram alert via Bot API
+```
+
+## 16F.3 Files Deployed
+
+| File | Location on Tier 1 | Purpose |
+|------|-------------------|---------|
+| `heartbeat.sh` | `/home/ubuntu/dispatch/heartbeat.sh` | Main heartbeat script — runs all checks |
+| `HEARTBEAT.md` | `~/NanoClaw/groups/telegram_main/HEARTBEAT.md` | Documents active checks and reporting rules |
+| `nanoclaw-heartbeat.service` | `~/.config/systemd/user/` | Systemd oneshot service unit |
+| `nanoclaw-heartbeat.timer` | `~/.config/systemd/user/` | Systemd timer (15-minute interval) |
+
+## 16F.4 Checks Performed (6 total)
+
+1. **NanoClaw service** — `systemctl --user is-active nanoclaw`
+2. **Tier 2 (PortalClaw)** — `ssh -o ConnectTimeout=5 tier2 'echo OK'`
+3. **Tier 3 (ReaderClaw)** — `ssh -o ConnectTimeout=5 tier3 'echo OK'`
+4. **Disk usage** — Alert if root partition exceeds 85%
+5. **Docker daemon** — `docker info` (required for container sessions)
+6. **Memory reminders** — Grep MEMORY.md for today's date
+
+## 16F.5 Reporting Modes
+
+- **Alert mode** (production default): Only sends Telegram message when issues are detected. All-clear cycles are logged to dispatch.log silently.
+- **Verbose mode** (`--verbose`): Always sends Telegram message with full status. Used for testing and debugging.
+
+## 16F.6 Management Commands
+
+```bash
+# Status
+systemctl --user status nanoclaw-heartbeat.timer
+
+# View logs
+grep HEARTBEAT /home/ubuntu/logs/ops/dispatch.log | tail -20
+
+# Temporarily disable
+systemctl --user stop nanoclaw-heartbeat.timer
+
+# Re-enable
+systemctl --user start nanoclaw-heartbeat.timer
+
+# Run manually (verbose)
+bash /home/ubuntu/dispatch/heartbeat.sh --verbose
+
+# Run manually (quiet/production)
+bash /home/ubuntu/dispatch/heartbeat.sh
+```
+
+## 16F.7 Testing Results (March 30, 2026)
+
+- Deployed with 60-second interval in verbose mode for initial testing
+- All 6 checks executed correctly across multiple cycles
+- Telegram message delivery confirmed (message_id 424+)
+- Simulated Tier 3 failure: alert correctly detected and reported "Tier 3 (ReaderClaw): UNREACHABLE"
+- Recovery detection: next cycle correctly showed all-clear after restoring Tier 3
+- Bot remained responsive to normal user messages during heartbeat cycles (no interference)
+- Switched to 15-minute production interval with alert-only mode after testing
+
+## 16F.8 Future Enhancements
+
+- Email urgency scan (run `email-summary.sh`, grep for URGENT keywords)
+- API usage threshold alerts (flag when daily spend exceeds configurable limit)
+- Credential expiry warnings
+- Container health checks (Docker container count, resource usage)
+- Tier 2/3 service-level checks (Squid on T2, Node.js on T3) beyond SSH reachability
+
+
 # 17. Open Questions & Risks
 
 **[UPDATED]** Several original questions have been resolved by implementation decisions.
@@ -1254,5 +1350,5 @@ The following items require action from the user (Philip Koh) and cannot be comp
 4. **Set Gemini billing alert** — Configure budget alert in Google AI Studio
 5. **Back up vault key** — Copy `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location
 6. **Remove temp:admin SSH** — Remove UFW rule on Tier 2 for 100.36.24.89 when no longer needed for testing. Also allowed on Tier 1 — may be stale now that admin workstation is 100.49.113.22.
-7. **Configure scheduled tasks** — Set up daily morning briefing cron, weekly portal checks via NanoClaw `schedule_task` MCP tool
+7. **Configure scheduled tasks** — ~~Heartbeat: DONE (Section 16F).~~ Still pending: daily morning briefing cron, weekly portal checks via NanoClaw `schedule_task` MCP tool
 8. **Configure VM rebuild crons** — Nightly ReaderClaw rebuild, weekly PortalClaw rebuild schedules on PhilClaw

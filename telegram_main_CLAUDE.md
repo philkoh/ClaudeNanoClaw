@@ -94,6 +94,23 @@ When Phil asks for a briefing or says "good morning":
 3. Review MEMORY.md for any pending todos or reminders
 4. Mention any active reminders (daily cleaning, etc.)
 
+## Heartbeat System
+
+A host-level heartbeat daemon runs every 15 minutes (configurable via systemd timer). It performs automated health checks and sends Telegram alerts when attention is needed. See HEARTBEAT.md in this workspace for the full checklist.
+
+**What the heartbeat checks:**
+- NanoClaw service status
+- Tier 2/3 SSH reachability
+- Disk usage (alerts at 85%)
+- MEMORY.md reminders due today
+- Docker daemon status
+
+**When Phil mentions a heartbeat alert**, review the alert content and help diagnose or resolve the issue. You can run dispatch scripts to investigate further.
+
+**Heartbeat management** (on the host, not from this container):
+- Status: `systemctl --user status nanoclaw-heartbeat.timer`
+- Logs: `grep HEARTBEAT /home/ubuntu/logs/ops/dispatch.log`
+
 ## Communication Style
 
 - Be concise and direct — Phil is busy

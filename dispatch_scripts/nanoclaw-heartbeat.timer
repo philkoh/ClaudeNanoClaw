@@ -1,0 +1,10 @@
+[Unit]
+Description=PhilClaw Heartbeat Timer
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=900
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target

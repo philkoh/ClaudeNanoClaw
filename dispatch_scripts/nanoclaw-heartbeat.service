@@ -1,0 +1,9 @@
+[Unit]
+Description=PhilClaw Heartbeat Check
+After=nanoclaw.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/ubuntu/dispatch/heartbeat.sh
+Environment=HOME=/home/ubuntu
+Environment=XDG_RUNTIME_DIR=/run/user/1000
