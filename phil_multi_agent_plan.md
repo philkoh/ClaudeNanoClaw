@@ -872,6 +872,7 @@ The following catalog represents the initial target capability set, organized by
 |---------------------|----------------------|-------------------------------------------------------------------------------------------------|----------------------|
 | Phase 1 (Week 1–2)  | Email Intelligence   | Daily inbox summary; spam/newsletter filtering; urgent message flagging; sender categorization  | 3 → 1                |
 | Phase 1             | Web Research         | Pricing lookups; vendor research; competitor monitoring; news alerts                            | 3 → 1                |
+| Phase 1             | Amazon Shopping      | Product search via Google; ASIN extraction; Pangolinfo real-time validation (price, delivery, stock) | 3 → 1          |
 | Phase 1             | Daily Briefing       | Morning summary of email, calendar, and task reminders delivered via Telegram                   | 3 + 1                |
 | Phase 2 (Week 3–4)  | Portal Monitoring    | ANSYS license status; landlord portal notices; insurance portal updates; vendor portal invoices | 1 → 2                |
 | Phase 2             | Invoice Tracking     | Extract invoice data from portals; track due dates; alert on upcoming payments                  | 2 → 1                |
@@ -1268,6 +1269,67 @@ bash /home/ubuntu/dispatch/heartbeat.sh
 - Credential expiry warnings
 - Container health checks (Docker container count, resource usage)
 - Tier 2/3 service-level checks (Squid on T2, Node.js on T3) beyond SSH reachability
+
+
+# 16G. Amazon Product Search (March 30, 2026)
+
+**[IMPLEMENTED — Step 1 deployed, Step 2 pending API key]**
+
+Two-step Amazon product search system: free Google discovery, then pay-per-use Pangolinfo validation.
+
+## 16G.1 Architecture
+
+```
+Step 1 — Discovery (free):
+  User query → product-search.sh → Tier 3 → Gemini grounded search
+  → Returns: product titles, approximate prices, ASINs when extractable
+
+Step 2 — Validation (pay-per-use, pending API key):
+  Selected ASINs → product-validate.sh → Tier 3 → Pangolinfo API
+  → Returns: exact price, delivery date range, stock status, seller, rating
+```
+
+## 16G.2 Files Deployed
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `product_search.js` | Tier 3: `/home/ubuntu/scripts/` | Gemini grounded search with ASIN extraction |
+| `product_validate.js` | Tier 3: `/home/ubuntu/scripts/` | Pangolinfo API ASIN lookup |
+| `product-search.sh` | Tier 1: `/home/ubuntu/dispatch/` | Step 1 dispatcher |
+| `product-validate.sh` | Tier 1: `/home/ubuntu/dispatch/` | Step 2 dispatcher |
+| `shopping/SKILL.md` | Tier 1: NanoClaw container skills | `/shop` skill definition |
+
+Agent gateway updated with both scripts whitelisted. ASIN input validated to alphanumeric + commas only.
+
+## 16G.3 ASIN Discovery Strategy
+
+ASINs are extracted from Gemini's response using three methods:
+1. Direct match of `ASIN: [10-char code]` in Gemini's text output
+2. Amazon URL pattern matching in text (`/dp/[ASIN]/`)
+3. URL extraction from grounding metadata chunks (with redirect resolution)
+
+**Known limitation:** Gemini grounded search returns ASINs reliably for popular products (AirPods, etc.) but may not find ASINs for niche products. When ASINs aren't found, the system still returns product info and approximate prices from Google, and the user can provide an ASIN manually.
+
+## 16G.4 Pangolinfo Integration (Pending)
+
+Pangolinfo API provides real-time Amazon data including:
+- `deliveryTime`: Actual delivery date range (e.g., "Apr 3 - Apr 5")
+- `price`: Current Amazon price
+- `seller` / `shipper`: Who sells and fulfills
+- `star` / `rating`: Product rating and review count
+- ZIP code support for localized delivery estimates
+
+**User action required:** Sign up at pangolinfo.com, then: `vault.sh set pangolinfo-api key <API_KEY>`
+
+## 16G.5 Security
+
+- Both steps run on Tier 3 (untrusted content tier)
+- API keys stored in Tier 1 vault, injected via SSH env vars
+- Output capped at 4000 characters per step
+- No raw Amazon URLs in bot responses
+- No purchasing capability — read-only product data
+- Amazon TOS: Google search is fine; Pangolinfo assumes scraping risk
+- Tier 2 (OpenClaw) is NOT used for Amazon browsing
 
 
 # 17. Open Questions & Risks

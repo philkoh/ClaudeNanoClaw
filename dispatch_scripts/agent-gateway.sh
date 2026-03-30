@@ -87,6 +87,27 @@ case "$SCRIPT_PATH" in
     fi
     exec bash "$SCRIPT_PATH" list
     ;;
+  /home/ubuntu/dispatch/product-search.sh)
+    # Args: quoted search query (required)
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: product-search.sh requires a query argument" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" "$ARGS"
+    ;;
+  /home/ubuntu/dispatch/product-validate.sh)
+    # Args: comma-separated ASINs (required), optional zip code
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: product-validate.sh requires ASIN list" >&2
+      exit 1
+    fi
+    # Validate: only allow alphanumeric, commas, spaces (ASINs + zip)
+    if ! [[ "$ARGS" =~ ^[A-Za-z0-9,\ ]+$ ]]; then
+      echo "ERROR: Invalid characters in ASIN list" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
   *)
     echo "ERROR: Script not allowed: $SCRIPT_PATH" >&2
     exit 1
