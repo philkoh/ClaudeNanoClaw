@@ -1,6 +1,6 @@
 ---
 name: shopping
-description: Search Amazon for products with price and delivery info. Two-step: Google discovery (free) then Pangolinfo validation (real-time price/delivery for specific ASINs).
+description: Search Amazon for products with price and delivery info. Two-step: Google discovery (free) then Rainforest API validation (real-time price/delivery for specific ASINs).
 ---
 
 # /shop — Amazon Product Search
@@ -22,7 +22,7 @@ Replace `<query>` with a product search query. Example: "Brother HL-L2350DW lase
 **Present the results as a numbered list** showing product title, approximate price, and ASIN. Then ask:
 > "Want me to check real-time price and delivery for any of these?"
 
-### Step 2 — Validation (on user request, via Pangolinfo)
+### Step 2 — Validation (on user request, via Rainforest API)
 
 Get real-time Amazon data for specific ASINs the user selects:
 
@@ -55,7 +55,7 @@ ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu
 ## Security notes
 
 - Step 1 uses Gemini grounded search (same as /search skill) — no additional API cost
-- Step 2 uses Pangolinfo API — requires API key in vault (`pangolinfo-api`)
+- Step 2 uses Rainforest API — requires API key in vault (`rainforest-api`)
 - Both steps run on Tier 3 (untrusted content tier)
 - Output capped at 4000 characters per step
 - ASIN validation in agent-gateway restricts input to alphanumeric + commas only

@@ -96,17 +96,17 @@ case "$SCRIPT_PATH" in
     exec bash "$SCRIPT_PATH" "$ARGS"
     ;;
   /home/ubuntu/dispatch/product-validate.sh)
-    # Args: comma-separated ASINs (required), optional zip code
+    # Args: comma-separated ASINs (required)
     if [ -z "$ARGS" ]; then
       echo "ERROR: product-validate.sh requires ASIN list" >&2
       exit 1
     fi
-    # Validate: only allow alphanumeric, commas, spaces (ASINs + zip)
-    if ! [[ "$ARGS" =~ ^[A-Za-z0-9,\ ]+$ ]]; then
+    # Validate: only allow alphanumeric and commas (ASINs only)
+    if ! [[ "$ARGS" =~ ^[A-Za-z0-9,]+$ ]]; then
       echo "ERROR: Invalid characters in ASIN list" >&2
       exit 1
     fi
-    exec bash "$SCRIPT_PATH" $ARGS
+    exec bash "$SCRIPT_PATH" "$ARGS"
     ;;
   *)
     echo "ERROR: Script not allowed: $SCRIPT_PATH" >&2

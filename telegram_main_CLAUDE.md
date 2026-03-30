@@ -62,7 +62,7 @@ Available dispatch scripts on the host:
 - `bash /home/ubuntu/dispatch/web-search.sh '<query>'` — Tier 3 web search
 - `bash /home/ubuntu/dispatch/portal-check.sh '<portal_name>' '<task>'` — Tier 2 portal check
 - `bash /home/ubuntu/dispatch/product-search.sh '<query>'` — Amazon product discovery via Google (free)
-- `bash /home/ubuntu/dispatch/product-validate.sh '<asin_list>' [zip]` — Real-time Amazon price/delivery via Pangolinfo
+- `bash /home/ubuntu/dispatch/product-validate.sh '<asin_list>'` — Real-time Amazon price/delivery via Rainforest API
 - `bash /home/ubuntu/dispatch/usage-report.sh [days]` — API usage report (Anthropic + Gemini)
 - `bash /home/ubuntu/dispatch/ops-log.sh '<message>'` — Log to ops channel
 

@@ -1,65 +1,79 @@
 const https = require('https');
 
-// Call Pangolinfo API for a single ASIN
-function lookupAsin(apiKey, asin, zipCode) {
+// Call Rainforest API for a single ASIN
+// Docs: https://docs.trajectdata.com/rainforestapi/product-data-api/overview
+function lookupAsin(apiKey, asin) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      url: `https://www.amazon.com/dp/${asin}`,
-      zipcode: zipCode || undefined,
+    const params = new URLSearchParams({
+      api_key: apiKey,
+      type: 'product',
+      asin: asin,
+      amazon_domain: 'amazon.com',
     });
 
-    const options = {
-      hostname: 'api.pangolinfo.com',
-      port: 443,
-      path: '/v1/scrape',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(payload),
-      },
-      timeout: 15000,
-    };
+    const url = `https://api.rainforestapi.com/request?${params}`;
 
-    const req = https.request(options, (res) => {
+    https.get(url, { timeout: 20000 }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => {
         try {
           const json = JSON.parse(body);
+          if (json.request_info?.success === false) {
+            reject(new Error(json.request_info?.message || `API error (HTTP ${res.statusCode})`));
+            return;
+          }
           resolve(json);
         } catch (e) {
-          reject(new Error(`Invalid JSON from Pangolinfo: ${body.slice(0, 200)}`));
+          reject(new Error(`Invalid JSON from Rainforest: ${body.slice(0, 200)}`));
         }
       });
-    });
-
-    req.on('error', (e) => reject(e));
-    req.on('timeout', () => { req.destroy(); reject(new Error('Pangolinfo request timeout')); });
-    req.end(payload);
+    }).on('error', (e) => reject(e))
+      .on('timeout', function() { this.destroy(); reject(new Error('Rainforest API request timeout')); });
   });
 }
 
-// Extract product data from Pangolinfo response
+// Extract product data from Rainforest API response
 function parseProduct(json) {
-  // Pangolinfo wraps results in data.json[0].data.results[0] or similar
-  // Handle multiple possible response structures
-  const data = json?.data?.json?.[0]?.data?.results?.[0]
-    || json?.data?.results?.[0]
-    || json?.data
-    || json;
+  const p = json?.product || {};
+  const bb = p.buybox_winner || {};
+  const price = bb.price || {};
+  const avail = bb.availability || {};
+  const fulfill = bb.fulfillment || {};
+  const delivery = fulfill.standard_delivery || {};
+  const seller = bb.fulfillment?.third_party_seller || {};
+
+  // Build seller string
+  let sellerName = 'Amazon.com';
+  if (seller.name) {
+    sellerName = seller.name;
+  } else if (fulfill.is_sold_by_amazon) {
+    sellerName = 'Amazon.com';
+  }
+
+  // Build shipper string
+  let shipperName = 'Unknown';
+  if (fulfill.is_fulfilled_by_amazon) {
+    shipperName = 'Amazon (FBA)';
+  } else if (fulfill.is_fulfilled_by_third_party) {
+    shipperName = sellerName;
+  } else if (fulfill.is_sold_by_amazon) {
+    shipperName = 'Amazon';
+  }
 
   return {
-    asin: data.asin || 'N/A',
-    title: data.title || 'Unknown',
-    price: data.price || 'N/A',
-    deliveryTime: data.deliveryTime || data.delivery_time || 'N/A',
-    seller: data.seller || 'N/A',
-    shipper: data.shipper || 'N/A',
-    star: data.star || data.rating_star || 'N/A',
-    rating: data.rating || data.reviews_total || 'N/A',
-    brand: data.brand || '',
-    availability: data.availability || (data.in_stock ? 'In Stock' : ''),
+    asin: p.asin || 'N/A',
+    title: p.title || 'Unknown',
+    price: price.raw || (price.value ? `$${price.value}` : 'N/A'),
+    deliveryDate: delivery.date || 'N/A',
+    deliveryName: delivery.name || '',
+    availability: avail.raw || avail.type || 'Unknown',
+    dispatchDays: avail.dispatch_days || '',
+    seller: sellerName,
+    shipper: shipperName,
+    rating: p.rating || 'N/A',
+    ratingsTotal: p.ratings_total || 0,
+    brand: p.brand || '',
   };
 }
 
@@ -70,13 +84,12 @@ async function main() {
     process.exit(1);
   }
 
-  const apiKey = process.env.PANGOLINFO_API_KEY;
+  const apiKey = process.env.RAINFOREST_API_KEY;
   if (!apiKey) {
-    console.error('ERROR: PANGOLINFO_API_KEY env var required');
+    console.error('ERROR: RAINFOREST_API_KEY env var required');
     process.exit(1);
   }
 
-  const zipCode = process.env.ZIP_CODE || '';
   const asins = asinList.split(',').map(s => s.trim()).filter(Boolean).slice(0, 5);
 
   const startTime = Date.now();
@@ -87,16 +100,17 @@ async function main() {
   for (let i = 0; i < asins.length; i++) {
     const asin = asins[i];
     try {
-      const response = await lookupAsin(apiKey, asin, zipCode);
+      const response = await lookupAsin(apiKey, asin);
       const p = parseProduct(response);
       successCount++;
 
       output += `${i + 1}. ${p.title} — ${p.price}\n`;
       output += `   ASIN: ${p.asin} | Seller: ${p.seller} | Ships: ${p.shipper}\n`;
-      output += `   Delivery: ${p.deliveryTime}`;
-      if (p.availability) output += ` | ${p.availability}`;
+      output += `   Delivery: ${p.deliveryDate}`;
+      if (p.deliveryName) output += ` (${p.deliveryName})`;
+      output += ` | ${p.availability}`;
       output += '\n';
-      output += `   Rating: ${p.star} stars (${p.rating} reviews)`;
+      output += `   Rating: ${p.rating}/5 (${p.ratingsTotal.toLocaleString()} reviews)`;
       if (p.brand) output += ` | Brand: ${p.brand}`;
       output += '\n\n';
     } catch (e) {
@@ -106,12 +120,11 @@ async function main() {
   }
 
   const elapsed = Date.now() - startTime;
-  console.error(`[pangolinfo-usage] ${JSON.stringify({
+  console.error(`[rainforest-usage] ${JSON.stringify({
     asins_requested: asins.length,
     success: successCount,
     errors: errorCount,
     duration_ms: elapsed,
-    zip_code: zipCode || 'none',
   })}`);
 
   // Cap output
