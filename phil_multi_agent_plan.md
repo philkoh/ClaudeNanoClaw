@@ -4,10 +4,8 @@
 
 ### Security Architecture & Deployment Plan
 
-**Rev A — Updated Post-Implementation**
-
 Originally drafted: March 19, 2026
-Revised: March 27, 2026
+Last updated: March 29, 2026
 
 Prepared for review by:
 
@@ -17,9 +15,9 @@ Prepared for review by:
 
 ---
 
-> **Rev A Change Summary (March 27, 2026):**
-> This revision updates the original Draft v0.1 plan to reflect the actual state of the system after implementation of Phases 0–2 and partial Phase 3. Key changes:
+> **Change Log:**
 >
+> **March 27, 2026:**
 > - All three VMs provisioned on AWS Lightsail with static IPs, fully hardened
 > - Tier 1 runs NanoClaw v1.2.17 as a systemd user service with container-based agent isolation
 > - Tier 2 uses Squid proxy with SNI filtering (the plan's recommended approach) + iptables uid-owner enforcement
@@ -30,7 +28,17 @@ Prepared for review by:
 > - Outgoing email pipeline working (Gmail SMTP, compose→approve→send)
 > - Claude Code SDK cold-start latency reduced from 125s → 2.5s (DNS timeout fix, March 27)
 > - Admin workstation migrated to cloud VM (100.49.113.22) for multi-device access
-> - Sections updated with implementation notes marked **[IMPLEMENTED]**, **[CHANGED]**, or **[PENDING]**
+>
+> **March 28, 2026:**
+> - Fixed two stdin bugs in email send pipeline (ipc.ts shell echo + send-email.js /dev/stdin)
+>
+> **March 29, 2026:**
+> - Added email detail lookup: `email-detail.sh` dispatch + `email_detail.js` on Tier 3 — raw and Gemini interpret modes for drilling into specific emails with image support
+> - Added API usage tracking: Anthropic proxy-level token logging + Gemini dispatch aggregation, `usage-report.sh` dispatch + container skill
+> - Deployed persistent memory system: USER.md, MEMORY.md, daily logs, conversation history injection for cross-session continuity
+> - Email unsubscribe investigation: List-Unsubscribe headers survive Gmail forwarding, RFC 8058 one-click POST identified as best method (not yet implemented)
+>
+> Sections updated with implementation notes marked **[IMPLEMENTED]**, **[CHANGED]**, or **[PENDING]**
 
 ---
 
@@ -50,7 +58,7 @@ Prepared for review by:
 
 7. Inter-Agent Communication Protocol — **[IMPLEMENTED]**
 
-8. Outgoing Communications Architecture — **[IMPLEMENTED]** Gmail SMTP working
+8. Outgoing Communications Architecture — **[PARTIAL]** Gmail SMTP working; calendar/fax/SMS planned
 
 9. Credential Management Architecture — **[IMPLEMENTED]**
 
@@ -60,9 +68,9 @@ Prepared for review by:
 
 12. Periodic VM Wipe & Rebuild Architecture — **[PARTIAL]** scripts ready, crons pending
 
-13. Human-in-the-Loop Workflows
+13. Human-in-the-Loop Workflows — **[PARTIAL]** approval gates working; 2FA sessions planned
 
-14. Task Catalog: What the Virtual Admin Can Do
+14. Task Catalog: What the Virtual Admin Can Do — **[PARTIAL]** Phase 1 tasks working
 
 15. Phased Rollout Plan — **[UPDATED]** Phase 0 complete, Phase 1 mostly complete, Phase 2 partial
 
@@ -71,6 +79,12 @@ Prepared for review by:
 16A. Security Audit Results (March 25, 2026) — **[NEW]**
 
 16B. Performance Analysis & Optimization (March 26–27, 2026) — **[NEW]**
+
+16C. Email Pipeline Fixes & Enhancements (March 28–29, 2026) — **[NEW]**
+
+16D. API Usage Tracking (March 29, 2026) — **[NEW]**
+
+16E. Persistent Memory System (March 29, 2026) — **[NEW]**
 
 17. Open Questions & Risks — **[UPDATED]**
 
@@ -218,36 +232,44 @@ Current vault entries (4 total):
 
 ## 4.4 Orchestration Logic
 
-**[IMPLEMENTED]** Tier 1’s orchestration uses a layered dispatch architecture: the NanoClaw container agent communicates with the host via an SSH agent gateway (`agent-gateway.sh`), which validates all commands against a strict whitelist before executing dispatch scripts. The container agent has 6 installed skills and uses MCP tools for Telegram messaging and task scheduling.
+**[IMPLEMENTED]** Tier 1’s orchestration uses a layered dispatch architecture: the NanoClaw container agent communicates with the host via an SSH agent gateway (`agent-gateway.sh`), which validates all commands against a strict whitelist before executing dispatch scripts. The container agent has 7 installed skills and uses MCP tools for Telegram messaging and task scheduling.
 
 **Dispatch scripts** (deployed to `/home/ubuntu/dispatch/` on Tier 1):
 
 | Script | Target | Purpose |
 |--------|--------|---------|
 | `email-summary.sh [count]` | Tier 3 | Fetch + summarize emails via Gemini |
+| `email-detail.sh <query> [max]` | Tier 3 | Targeted email lookup (raw mode) |
+| `email-detail.sh --interpret <b64_prompt> <query> [max]` | Tier 3 | Email lookup + Gemini interpret (images/HTML) |
 | `web-search.sh “<query>”` | Tier 3 | Grounded web search via Gemini |
 | `portal-check.sh <name> “<task>”` | Tier 2 | Full portal orchestration (vault→open→run→close) |
+| `usage-report.sh [days]` | Local | Anthropic + Gemini API usage report |
 | `ops-log.sh “<message>”` | Local + Telegram | Log to dispatch.log + ops channel |
 
-**Agent gateway** (`agent-gateway.sh`): Forced SSH command that blocks shell metacharacters (`;|&\`$()`) and enforces per-script argument validation. Only the 4 dispatch scripts plus `vault.sh list` are permitted.
+**Agent gateway** (`agent-gateway.sh`): Forced SSH command that blocks shell metacharacters (`;|&\`$()`) and enforces per-script argument validation. Whitelists 7 paths: the 6 dispatch scripts listed above plus `vault.sh list`.
 
-**Container skills** (6 installed):
+**Container skills** (7 installed):
 
 | Skill | Trigger | Dispatch |
 |-------|---------|----------|
-| `/email` | “check email”, “inbox summary” | email-summary.sh |
-| `/search` | “search for”, “find out about” | web-search.sh |
-| `/portal` | “check portal”, “look up account” | portal-check.sh |
+| `/email` (email-triage) | “check email”, “inbox summary” | email-summary.sh + email-detail.sh |
+| `/search` (web-research) | “search for”, “find out about” | web-search.sh |
+| `/portal` (portal-check) | “check portal”, “look up account” | portal-check.sh |
+| `/usage` | “API usage”, “how much have we spent” | usage-report.sh |
 | `/status` | “system status” | Local checks |
 | `/capabilities` | “what can you do” | Lists available skills |
 | `slack-formatting` | Auto | Formats messages for Telegram |
 
-**Tested end-to-end pipelines** (5/5 passed, March 2026):
+**Note:** Persistent memory (USER.md, MEMORY.md, daily logs) is handled via instructions in the container's CLAUDE.md, not a separate skill directory. The group workspace is mounted at `/workspace/group/` in the container.
+
+**Tested end-to-end pipelines** (7/7 passed, March 2026):
 1. Email triage: Tier 3 IMAP + Gemini 2.5 Flash → structured briefing (~28s warm)
-2. Web search: Tier 3 Gemini grounded search → results with sources (~32s warm)
-3. Portal dispatch: Tier 2 OpenClaw in Docker via Squid proxy → results
-4. Vault listing: container → SSH gateway → vault list
-5. Prompt injection resistance: correctly treats Tier 2/3 output as untrusted data
+2. Email detail: Tier 3 IMAP search + Gemini interpret → targeted email content with images (~4s)
+3. Web search: Tier 3 Gemini grounded search → results with sources (~32s warm)
+4. Portal dispatch: Tier 2 OpenClaw in Docker via Squid proxy → results
+5. Vault listing: container → SSH gateway → vault list
+6. Usage report: aggregates Anthropic proxy + Gemini dispatch usage logs
+7. Prompt injection resistance: correctly treats Tier 2/3 output as untrusted data
 
 **[PENDING]** Scheduled tasks: daily morning briefing cron, weekly portal checks, monthly invoice reminders — NanoClaw supports cron via the `schedule_task` MCP tool but no schedules are configured yet.
 
@@ -268,7 +290,7 @@ Tier 2 exists to solve a specific problem: logging into password-protected web p
 | LLM Backend        | Claude API (Sonnet 4.6) — Anthropic API key injected from Tier 1 vault **[IMPLEMENTED]**                                                 |
 | Sandboxing         | OpenClaw Docker container with Squid proxy routing **[IMPLEMENTED]**                                                                     |
 | Egress Firewall    | Squid v6.13 on 127.0.0.1:3128 + 172.17.0.1:3128 (Docker bridge), domain-based CONNECT filtering **[IMPLEMENTED]**                       |
-| iptables           | DOCKER-USER chain forces containers through Squid only (uid-owner=proxy/13), persisted via systemd **[IMPLEMENTED]**                     |
+| iptables           | DOCKER-USER chain forces containers through Squid only (uid-owner=proxy/13). Persisted via `docker-user-firewall.service` (systemd) **[IMPLEMENTED, fixed March 29]** |
 | Network            | UFW: default deny in/out. Inbound SSH from Tier 1 only. Outbound: DNS, Anthropic API, 443/tcp via Squid **[IMPLEMENTED]**                |
 | HTTP Server        | DISABLED **[IMPLEMENTED]**                                                                                                                |
 | Credential Storage | NONE on disk. Credentials injected as environment variables per-session, wiped on completion **[IMPLEMENTED]**                            |
@@ -296,7 +318,9 @@ Tier 2 exists to solve a specific problem: logging into password-protected web p
 
 **Why environment variables and not the system prompt?** System prompts are part of the LLM context and could theoretically be extracted by a prompt injection attack on a web page the browser visits. Environment variables are read by the automation code (not the LLM) to fill form fields programmatically, reducing exposure.
 
-## 5.3 The 20-Portal Challenge
+## 5.3 The 20-Portal Challenge — **[PLANNED]**
+
+**[PLANNED — no real portal credentials have been added to the vault yet.** The infrastructure is ready (vault, dispatch, Squid filtering) but awaits user action to add portal entries.**]**
 
 With approximately 20 portals to manage, the system needs a structured registry. Each portal entry in Tier 1’s vault includes:
 
@@ -337,16 +361,19 @@ Tier 3 is the most dangerous component by design. It is the only agent that touc
 | HTTP Server        | DISABLED **[IMPLEMENTED]**                                                                                          |
 | Credential Storage | NONE. All credentials injected at runtime via SSH env vars from Tier 1 vault **[IMPLEMENTED]**                      |
 | Email Access       | Read-only Gmail IMAP via `imapflow` + `mailparser` (global npm). App-specific password with no send permission **[IMPLEMENTED]** |
-| Disabled Services  | snapd, udisks2, password auth **[IMPLEMENTED]**                                                                     |
+| Disabled Services  | snapd, udisks2, password auth **[IMPLEMENTED]** (udisks2 re-disabled March 29) |
 
 **Scripts deployed to `/home/ubuntu/scripts/` on Tier 3:**
 
 | Script | Purpose |
 |--------|---------|
 | `email_summarize.js` | IMAP fetch → Gemini summarization → structured briefing (500 char/email cap) |
+| `email_detail.js` | IMAP search → targeted email lookup; optional Gemini interpret mode with image download and HTML stripping |
 | `web_search.js` | Gemini grounded search with Google Search tool (3000 char cap) |
 | `test_imap.js` | IMAP connection test |
 | `test_web_search.js` | Web search test |
+
+All three production scripts (`email_summarize.js`, `email_detail.js`, `web_search.js`) log Gemini `usageMetadata` to stderr as `[gemini-usage]` JSON for usage tracking aggregation.
 
 **[PENDING]** Exchange → Gmail forwarding (phil@emtera.com → philkoh.admin@gmail.com) — user action needed in Outlook web.
 
@@ -479,6 +506,8 @@ Key files on Tier 1:
 - Vault entry `gmail-smtp`: type=smtp, host=smtp.gmail.com, port=465
 - Postfix bound to `inet_interfaces=loopback-only` for local relay
 
+**[FIXED March 28]** Two stdin piping bugs in the email send pipeline were fixed: (1) `ipc.ts` used shell `echo` which interpreted `\n` in JSON, breaking email bodies with newlines — fixed by using `execSync` `input` option; (2) `send-email.js` used `readFileSync('/dev/stdin')` which doesn't work with `execSync` input piping — fixed by reading from fd 0.
+
 **[PENDING]** Exchange SMTP (port 587) not yet configured.
 
 Email is the primary outgoing communication channel. The workflow:
@@ -501,18 +530,22 @@ sudo ufw allow out to smtp.gmail.com port 465      # Gmail
 
 SMTP credentials (separate from portal login credentials) are stored in Tier 1’s encrypted vault alongside the portal credentials. For Gmail, an app-specific password with send-only scope is recommended. For Exchange, an application password or OAuth token with Mail.Send permission via Microsoft Graph API.
 
-## 8.3 Calendar Invites
+## 8.3 Calendar Invites — **[PLANNED]**
+
+**[PLANNED — not yet implemented.** No calendar APIs are connected. No egress rules for Graph or Google Calendar exist on Tier 1. Basic ICS-over-SMTP invites would work with the existing email pipeline but have not been tested.**]**
 
 Calendar invites are structurally identical to email — they are SMTP messages with an ICS (iCalendar) attachment. The workflow is the same: Tier 1 composes the invite (attendees, time, location, agenda), presents it to the user for approval, and sends it via SMTP. No additional infrastructure or egress rules are needed beyond what email already requires.
 
-For tighter calendar integration (checking availability, managing recurring events), Tier 1 can connect to Microsoft Graph API (Calendar.ReadWrite scope) or Google Calendar API. These are REST APIs with structured JSON responses — no free-form untrusted content — making them safe to call directly from Tier 1. The calendar API endpoints are added to Tier 1’s egress allowlist:
+For tighter calendar integration (checking availability, managing recurring events), Tier 1 can connect to Microsoft Graph API (Calendar.ReadWrite scope) or Google Calendar API. These are REST APIs with structured JSON responses — no free-form untrusted content — making them safe to call directly from Tier 1. The calendar API endpoints would be added to Tier 1’s egress allowlist:
 
 ```bash
 sudo ufw allow out to graph.microsoft.com port 443  # MS Graph
 sudo ufw allow out to www.googleapis.com port 443   # Google Calendar
 ```
 
-## 8.4 Internet Fax
+## 8.4 Internet Fax — **[PLANNED]**
+
+**[PLANNED — not yet implemented.** No fax API credentials or egress rules exist.**]**
 
 Some vendors, landlords, insurance companies, and government-adjacent entities still require faxes. Internet fax services provide REST APIs with the same safe outgoing-only profile as SMTP:
 
@@ -562,7 +595,9 @@ These are not included in the initial rollout but require no architectural chang
 | Automatic rotation alerts  | Tier 1 tracks password ages and alerts user to rotate                            | Stale credentials                       |
 | Zero credentials on Tier 3 | Tier 3 has only its own Gemini API key                                           | Compromise of the most-exposed agent    |
 
-## 9.2 2FA Handling
+## 9.2 2FA Handling — **[PLANNED]**
+
+**[PLANNED — not yet implemented.** No real portals with 2FA have been onboarded. TOTP seed storage, email/SMS code relay, and Duo push flows are designed but untested.**]**
 
 For portals that require two-factor authentication, the flow depends on the 2FA method:
 
@@ -622,14 +657,15 @@ fi
 ```bash
 # close_portal.sh (called by Tier 1 after task completion)
 #!/bin/bash
-# Reset to default deny
-sudo ufw reset
-sudo ufw default deny incoming
-sudo ufw default deny outgoing
-sudo ufw allow in from [Tier 1 IP] port 22
-sudo ufw allow out to [Anthropic API IPs] port 443
-sudo ufw enable
+# Clear Squid whitelist and reload (UFW rules stay static)
+truncate -s 0 /etc/squid/whitelist.txt
+squid -k reconfigure
+# Kill any running OpenClaw containers
+docker stop $(docker ps -q --filter label=openclaw-session) 2>/dev/null
+docker rm $(docker ps -aq --filter label=openclaw-session) 2>/dev/null
 ```
+
+**[CHANGED]** The original plan described `close_portal.sh` resetting UFW entirely. The actual implementation is simpler and better: it clears the Squid whitelist and reloads, leaving the static UFW rules untouched. This avoids the risk of a UFW reset race condition or misconfiguration.
 
 ## 10.3 Tier 3 (Fully-Exposed) Firewall Rules
 
@@ -649,7 +685,7 @@ sudo ufw enable
 
 - **Squid v6.13** on 127.0.0.1:3128 + 172.17.0.1:3128 (Docker bridge)
 - **Domain-based CONNECT filtering** via SNI inspection — no TLS MITM needed
-- **iptables uid-owner enforcement** (security audit fix H1): DOCKER-USER chain restricts outbound port 443 to Squid's uid (proxy, uid 13) only, preventing containers from bypassing the proxy. Persisted via `docker-user-firewall.service` (systemd)
+- **iptables uid-owner enforcement** (security audit fix H1): DOCKER-USER chain restricts outbound port 443 to Squid's uid (proxy, uid 13) only, preventing containers from bypassing the proxy. Persisted via `docker-user-firewall.service` (systemd, created March 29)
 - **Dynamic whitelist**: Tier 1 writes `whitelist.txt` via SSH before each portal session, reloads Squid, then clears it after completion
 
 
@@ -736,7 +772,9 @@ ssh ubuntu@$NEW_IP 'chmod +x provision_tier3.sh && ./provision_tier3.sh'
 ssh ubuntu@$NEW_IP 'openclaw --version && systemctl status squid'
 ```
 
-## 12.3 Event-Driven Rebuilds (Active Immune Response)
+## 12.3 Event-Driven Rebuilds (Active Immune Response) — **[PLANNED]**
+
+**[PLANNED — no anomaly detection or automated rebuild triggers are implemented. Rebuild scripts exist (Section 12.1) but must be run manually.]**
 
 In addition to scheduled rebuilds, Tier 1 can trigger an immediate wipe-and-rebuild of Tier 2 or Tier 3 if it detects anomalous behavior. This turns the rebuild capability into an active immune response rather than just a maintenance routine.
 
@@ -768,7 +806,7 @@ Tier 1 (NanoClaw) is NOT subject to periodic wipes because it holds the credenti
 
 - Regular encrypted backups of the credential vault and configuration to a separate location
 
-- File integrity monitoring (e.g., AIDE or Tripwire) to detect unexpected changes to the host filesystem
+- File integrity monitoring (e.g., AIDE or Tripwire) to detect unexpected changes to the host filesystem **[PLANNED — not installed]**
 
 - Manual security audits on a monthly or quarterly basis
 
@@ -807,7 +845,9 @@ Certain actions always require explicit user approval, regardless of the agent�
 
 - Daily/weekly briefing compilation
 
-13.3 2FA Interactive Sessions
+13.3 2FA Interactive Sessions — **[PLANNED]**
+
+**[PLANNED — no schedules exist. Depends on portal onboarding (Section 5.3).]**
 
 For portals requiring 2FA, the recommended workflow is to batch interactive sessions. Example schedule:
 
@@ -840,7 +880,7 @@ The following catalog represents the initial target capability set, organized by
 
 - ~~Provision three Lightsail VMs~~ **[DONE]** — Tier 1: 174.129.11.27, Tier 2: 52.70.246.155, Tier 3: 13.218.4.41
 
-- ~~Harden all VMs: SSH key-only auth, disable password login, UFW configuration, fail2ban~~ **[DONE]** — security audit March 25 confirmed hardening. PermitRootLogin no, fail2ban active, X11Forwarding off, snapd/udisks2 disabled on all VMs.
+- ~~Harden all VMs: SSH key-only auth, disable password login, UFW configuration, fail2ban~~ **[DONE]** — security audit March 25 confirmed hardening. PermitRootLogin no, fail2ban active, X11Forwarding off, snapd/udisks2 disabled on all VMs. Regressions on Tier 3 (fail2ban, udisks2, X11) and Tier 2 (X11, iptables persistence) found and fixed March 29.
 
 - ~~Install NanoClaw on Tier 1; test container isolation~~ **[DONE]** — NanoClaw v1.2.17 running as systemd user service. Docker container isolation with credential proxy on port 3001.
 
@@ -920,7 +960,7 @@ The following catalog represents the initial target capability set, organized by
 | Telegram Bot API           | Free tier                                       | $0                                      |
 | Total                      |                                                 | **$109–164**                            |
 
-This estimate assumes moderate daily usage (10–20 email triage cycles, 2–5 portal sessions, 5–10 web research queries per day). Using Claude Sonnet 4.6 for all tasks (current config) keeps API costs manageable. The admin workstation can be stopped when not actively developing.
+This estimate assumes moderate daily usage (10–20 email triage cycles, 2–5 portal sessions, 5–10 web research queries per day). Using Claude Sonnet 4.6 for all tasks (current config) keeps API costs manageable. The admin workstation can be stopped when not actively developing. **[NEW]** API costs are now tracked via the usage monitoring system (Section 16D) — actual spend can be checked via `usage-report.sh`.
 
 
 # 16A. Security Audit Results (March 25, 2026)
@@ -932,14 +972,14 @@ This estimate assumes moderate daily usage (10–20 email triage cycles, 2–5 p
 | ID | Severity | Finding | Fix Applied |
 |----|----------|---------|-------------|
 | H2 | High | agent-gateway.sh command injection via shell metacharacters | Metachar block via case statement + per-script argument validation |
-| H1 | High | Tier 2 outbound 443 reachable by any container process (bypass Squid) | iptables uid-owner restricts port 443 to Squid UID (proxy, uid 13). Persisted via `docker-user-firewall.service` |
+| H1 | High | Tier 2 outbound 443 reachable by any container process (bypass Squid) | iptables uid-owner restricts port 443 to Squid UID (proxy, uid 13). Persisted via `docker-user-firewall.service` (created March 29) |
 | M5 | Medium | No output caps on Tier 3 scripts (prompt injection payload risk) | email_summarize.js: 500 chars/email cap. web_search.js: 3000 chars total cap |
 | M1 | Medium | PermitRootLogin not explicitly disabled | `PermitRootLogin no` in `/etc/ssh/sshd_config.d/99-hardening.conf` on all 3 VMs |
-| M3 | Medium | fail2ban not running on Tier 3 | fail2ban started and enabled |
+| M3 | Medium | fail2ban not running on Tier 3 | fail2ban installed, started, and enabled (re-installed March 29 after regression) |
 | M4 | Medium | fail2ban not installed on Tier 2 | fail2ban installed, started, enabled |
 | M6 | Medium | Script permissions inconsistent | All scripts set to 755 on Tier 1 + Tier 2 |
 | M7 | Medium | Postfix listening on all interfaces on Tier 1 | `inet_interfaces=loopback-only` in main.cf |
-| L1-L4 | Low | X11Forwarding, snapd, udisks2, temp files | X11Forwarding off, snapd/udisks2 disabled, /tmp cleaned |
+| L1-L4 | Low | X11Forwarding, snapd, udisks2, temp files | X11Forwarding off on all 3 VMs; snapd disabled on all; udisks2 disabled on all; /tmp cleaned. (Tier 2/3 X11 and Tier 3 udisks2 re-fixed March 29 after regression) |
 
 ## 16A.2 Intentionally Deferred
 
@@ -952,7 +992,7 @@ This estimate assumes moderate daily usage (10–20 email triage cycles, 2–5 p
 
 | ID | Flaw | Mitigation |
 |----|------|------------|
-| F1 | Container → host SSH lateral movement path | Mitigated by agent-gateway.sh command restriction (only 4 dispatch scripts + vault list allowed) |
+| F1 | Container → host SSH lateral movement path | Mitigated by agent-gateway.sh command restriction (7 whitelisted paths: 6 dispatch scripts + vault list) |
 | F2 | Squid TOCTOU gap (whitelist could change during session) | Mitigated by iptables uid-owner (H1 fix) — containers cannot bypass proxy regardless |
 | F3 | Gemini billing — no spending cap set | User action needed: set budget alert in Google AI Studio |
 | F4 | No integrity verification of Tier 2/3 scripts | Accept risk for now; rebuild scripts reprovision from Tier 1 |
@@ -1025,6 +1065,109 @@ The container's agent-runner (`index.ts`) now includes sub-step timing in stderr
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` also disables GrowthBook feature flag evaluation, which may silently disable some features (1M context window, Channels, remote control). Monitor for regressions. If needed, replace with granular flags (`DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`, `DISABLE_AUTOUPDATER=1`) and keep `--dns 127.0.0.1` as the primary fix.
 
 
+# 16C. Email Pipeline Fixes & Enhancements (March 28–29, 2026)
+
+**[NEW SECTION]**
+
+## 16C.1 Email Send Bug Fixes (March 28)
+
+Two bugs in the email send pipeline caused failures when email bodies contained newlines:
+
+| Bug | File | Root Cause | Fix |
+|-----|------|------------|-----|
+| Shell echo interprets `\n` | `src/ipc.ts` | `/bin/sh` (dash) `echo` converts `\n` to actual newlines, breaking JSON | Use `execSync` `input` option instead of shell echo pipe |
+| `/dev/stdin` unavailable | `scripts/send-email.js` | `execSync` with `input` pipes to fd 0 but doesn't mount `/dev/stdin` | Use `readFileSync(0, 'utf8')` instead of `readFileSync('/dev/stdin')` |
+
+## 16C.2 Email Detail Lookup (March 29)
+
+New dispatch pipeline for drilling into specific emails rather than just getting summaries.
+
+**Two modes:**
+- **Raw mode:** `email-detail.sh <query> [max]` — IMAP search + full text body extraction, ~1s, no Gemini API call
+- **Interpret mode:** `email-detail.sh --interpret <base64_prompt> <query> [max]` — sends cleaned HTML (30K char cap) + downloaded remote images to Gemini 2.5 Flash for analysis, ~4s
+
+**Key implementation details:**
+- Interpret prompt is base64-encoded to survive SSH gateway quoting
+- HTML is tag-stripped before sending to Gemini (reduces tokens ~10x, preserves all text content)
+- Remote `<img src>` images are downloaded with 3s hard timeout per image
+- Tracking pixels filtered out (images <500 bytes)
+- Deployed files: Tier 3 `email_detail.js`, Tier 1 `email-detail.sh`, gateway whitelist entry, updated email-triage skill
+
+## 16C.3 Email Unsubscribe Investigation (March 29)
+
+Investigated automated unsubscribe methods. Key finding: `List-Unsubscribe` and `List-Unsubscribe-Post` headers survive Gmail forwarding (pk14225@gmail.com → philkoh.admin@gmail.com), confirmed by raw IMAP header inspection.
+
+**Recommended implementation priority:**
+1. RFC 8058 one-click POST (`curl -d "List-Unsubscribe=One-Click" <URL>`) — highest coverage, simplest
+2. List-Unsubscribe mailto: — Tier 1 SMTP send to unsubscribe address
+3. Body link extraction + curl — Gemini parses HTML footer for unsubscribe links
+4. Body link + Tier 2 browser — for complex unsubscribe flows with forms
+
+**[PENDING]** Implementation of `unsubscribe.sh` dispatch script.
+
+
+# 16D. API Usage Tracking (March 29, 2026)
+
+**[NEW SECTION]** Two-provider API usage monitoring accessible via NanoClaw Telegram.
+
+## 16D.1 Anthropic Usage — Proxy Tracking
+
+The credential proxy (`credential-proxy.ts`) on Tier 1 intercepts every API response flowing to the NanoClaw container:
+- Decompresses gzip SSE streaming responses
+- Parses `message_start` events (model, input tokens, cache tokens) and `message_delta` events (output tokens)
+- Logs to `/home/ubuntu/NanoClaw/data/usage/anthropic_proxy.jsonl`
+- Fields: `ts`, `model`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `ttfb_ms`, `elapsed_ms`
+
+**Note:** The Anthropic Usage API (Method 2) was evaluated but intentionally NOT deployed — it requires an admin key (`sk-ant-admin...`) with full org admin powers (member management, key management), which cannot be scoped to read-only usage. Too much privilege risk.
+
+## 16D.2 Gemini Usage — Dispatch Aggregation
+
+All three Tier 3 scripts log `usageMetadata` from Gemini responses to stderr as `[gemini-usage]` JSON lines. The dispatch scripts on Tier 1 pipe output through `log-gemini-usage.sh`, which extracts these lines and appends to `/home/ubuntu/NanoClaw/data/usage/gemini_dispatch.jsonl`.
+
+Fields: `ts`, `script`, `prompt_tokens`, `completion_tokens`, `total_tokens`
+
+## 16D.3 NanoClaw Access
+
+- Dispatch: `usage-report.sh [days]` — reads both JSONL files, aggregates by provider and model
+- Container skill: `/usage` — triggers usage-report.sh via gateway
+- Gateway: whitelisted with integer-only day argument validation
+
+
+# 16E. Persistent Memory System (March 29, 2026)
+
+**[NEW SECTION]** NanoClaw sessions are ephemeral containers — agent context was lost between sessions. This system provides cross-session memory persistence.
+
+## 16E.1 Memory Files
+
+Deployed to Tier 1 group workspace (`groups/telegram_main/`, mounted as `/workspace/group/` in containers):
+
+| File | Purpose |
+|------|---------|
+| `USER.md` | Philip's profile, preferences, active projects, family details, daily routines |
+| `MEMORY.md` | Active todo lists (admin/hardware/coding), recurring reminders, key decisions, facts |
+| `memory/YYYY-MM-DD.md` | Daily activity logs (one per day) |
+
+## 16E.2 Conversation History Injection
+
+Code changes to NanoClaw (`src/`):
+- `db.ts` — Added `getRecentHistory()` to fetch last 30 messages from SQLite before current batch
+- `router.ts` — Added `formatHistoryContext()` to format history as `<recent_history>` XML block
+- `index.ts` — Every prompt now prepends last 30 messages as context for session continuity
+
+## 16E.3 Agent Instructions
+
+Updated `CLAUDE.md` in the group workspace to instruct the agent to:
+- Read `USER.md` and `MEMORY.md` at session start
+- Update `MEMORY.md` when todo items change or new decisions are made
+- Append to daily log (`memory/YYYY-MM-DD.md`) for significant actions
+
+## 16E.4 Gaps vs OpenClaw Memory
+
+- No semantic/vector memory search (sqlite-vec + Gemini embeddings would close this)
+- No pre-compaction memory flush (agent must manually save before context truncation)
+- No automatic post-turn fact extraction (agent follows CLAUDE.md instructions, not built-in hooks)
+
+
 # 17. Open Questions & Risks
 
 **[UPDATED]** Several original questions have been resolved by implementation decisions.
@@ -1041,6 +1184,8 @@ The container's agent-runner (`index.ts`) now includes sub-step timing in stderr
 | OpenClaw browser on Tier 2        | OpenClaw’s browser tool does not function inside Docker containers (gateway not running). Falls back to web_fetch.                                        | **[OPEN]** Real portal logins needing interactive form navigation will need browser automation configured. May require gateway process or alternative approach. |
 | Gemini billing                    | No spending cap configured in Google AI Studio.                                                                                                           | **[OPEN]** User should set a budget alert in Google AI Studio to prevent runaway costs (architecture flaw F3). |
 | Vault backup                      | Single point of failure on vault encryption key.                                                                                                          | **[OPEN]** User should back up `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location (architecture flaw F5). |
+| Email unsubscribe automation      | User wants NanoClaw to auto-unsubscribe from bulk senders. RFC 8058 headers survive Gmail forwarding.                                                     | **[PENDING]** Investigation complete. Implementation of `unsubscribe.sh` dispatch not yet started. |
+| Persistent memory maturity        | NanoClaw memory system lacks vector search, pre-compaction flush, and auto fact extraction compared to OpenClaw.                                           | **[OPEN]** Current file-based system works for basic persistence. May need sqlite-vec for scaling. |
 
 
 # 18. Review Checklist by Reviewer Role
@@ -1051,7 +1196,7 @@ The container's agent-runner (`index.ts`) now includes sub-step timing in stderr
 
 - Are there portals missing from the initial list?
 
-- Is the $75–172/month cost range acceptable?
+- Is the $109–164/month cost range acceptable? (See Section 16 for current estimate)
 
 - Are the human-in-the-loop requirements (Section 13) reasonable or too restrictive?
 
@@ -1089,7 +1234,7 @@ The container's agent-runner (`index.ts`) now includes sub-step timing in stderr
 
 - Cloud infrastructure costs may be deductible as a business expense if used for work; consult tax advisor on classification.
 
-*END OF DOCUMENT — Rev A (March 27, 2026)*
+*END OF DOCUMENT (March 29, 2026)*
 
 ---
 
@@ -1102,4 +1247,6 @@ The following items require action from the user (Philip Koh) and cannot be comp
 3. **Add real portal credentials to vault** — Use `vault.sh` on Tier 1 to add portal entries (ANSYS, landlord, insurance, etc.)
 4. **Set Gemini billing alert** — Configure budget alert in Google AI Studio
 5. **Back up vault key** — Copy `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location
-6. **Remove temp:admin SSH** — Remove UFW rule on Tier 2 for 100.36.24.89 when no longer needed for testing
+6. **Remove temp:admin SSH** — Remove UFW rule on Tier 2 for 100.36.24.89 when no longer needed for testing. Also allowed on Tier 1 — may be stale now that admin workstation is 100.49.113.22.
+7. **Configure scheduled tasks** — Set up daily morning briefing cron, weekly portal checks via NanoClaw `schedule_task` MCP tool
+8. **Configure VM rebuild crons** — Nightly Tier 3 rebuild, weekly Tier 2 rebuild schedules on Tier 1

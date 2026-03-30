@@ -1,0 +1,16 @@
+[Unit]
+Description=Restore DOCKER-USER iptables rules for Squid enforcement
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iptables -F DOCKER-USER
+ExecStart=/usr/sbin/iptables -A DOCKER-USER -i docker0 -p tcp -d 172.17.0.1 --dport 3128 -j ACCEPT
+ExecStart=/usr/sbin/iptables -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -A DOCKER-USER -i docker0 -j DROP
+ExecStart=/usr/sbin/iptables -A DOCKER-USER -j RETURN
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

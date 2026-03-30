@@ -23,6 +23,11 @@ async function main() {
     tools: [{ googleSearch: {} }],
   });
 
+  const usage = result.response.usageMetadata;
+  if (usage) {
+    console.error(`[gemini-usage] ${JSON.stringify({prompt_tokens:usage.promptTokenCount||0,completion_tokens:usage.candidatesTokenCount||0,total_tokens:usage.totalTokenCount||0})}`);
+  }
+
   const response = result.response;
 
   // Server-side output cap: max 3000 chars for search results (plan Section 6.3)

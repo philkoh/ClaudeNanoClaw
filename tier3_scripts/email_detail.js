@@ -187,6 +187,10 @@ async function interpretWithGemini(emails, prompt) {
 
   const tGemini = Date.now();
   const result = await model.generateContent({ contents: [{ parts }] });
+  const usage = result.response.usageMetadata;
+  if (usage) {
+    console.error(`[gemini-usage] ${JSON.stringify({prompt_tokens:usage.promptTokenCount||0,completion_tokens:usage.candidatesTokenCount||0,total_tokens:usage.totalTokenCount||0})}`);
+  }
   let text = result.response.text();
   const tDone = Date.now();
 
