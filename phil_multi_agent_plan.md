@@ -48,10 +48,11 @@ Prepared for review by:
 > **March 31, 2026:**
 > - PhilClaw instance doubled: `small_3_0` (2 GB) → `medium_3_0` (4 GB) via Lightsail snapshot + new instance + static IP migration
 > - NanoClaw Pro upgrade: QMD semantic memory bundle deployed via volume mount, proactive check-in scheduled tasks added
-> - QMD tested but **non-viable on CPU** — embedding model (`embeddinggemma`) takes 5+ min for 2 files, unusable inline. Needs GPU or lighter model.
+> - QMD tested but **non-viable on CPU** — embedding model (`embeddinggemma`) takes 5+ min for 2 files, unusable inline.
+> - **Replaced QMD with custom hybrid memory search**: sqlite + FTS5 + Gemini cloud embeddings (text-embedding-001 via Tier 3). Hybrid 70% vector + 30% BM25 scoring. Works instantly on CPU — no GPU needed.
 > - WebSearch/WebFetch tool blocking confirmed working via `disallowedTools` in agent-runner config
 > - Full test suite: 40/40 tests passed (ping, conversations, browser, phase3, recent features, lockdown, restart persistence)
-> - Added Section 16H: NanoClaw Pro Upgrade
+> - Added Section 16H: NanoClaw Pro Upgrade → Memory Search System
 
 ---
 
@@ -1192,7 +1193,7 @@ Updated `CLAUDE.md` in the group workspace to instruct the agent to:
 
 ## 16E.4 Gaps vs OpenClaw Memory
 
-- ~~No semantic/vector memory search~~ **[ATTEMPTED]** QMD v2.0.1 deployed via volume mount (Section 16H) but embedding model (`embeddinggemma`) is non-viable on CPU — 5+ min to embed 2 files. Needs GPU instance or a lighter embedding model to be usable.
+- ~~No semantic/vector memory search~~ **[RESOLVED]** Custom hybrid search system deployed (Section 16H): SQLite + FTS5 + Gemini cloud embeddings (3072-dim). 70% vector + 30% BM25 scoring. Works on CPU via Tier 3 dispatch — no GPU needed. QMD removed.
 - No pre-compaction memory flush (agent must manually save before context truncation)
 - No automatic post-turn fact extraction (agent follows CLAUDE.md instructions, not built-in hooks)
 
@@ -1379,13 +1380,20 @@ QMD v2.0.1 deployed as a read-only volume mount (`~/qmd-bundle/` → `/opt/qmd` 
 | `groups/telegram_main/CLAUDE.md` | QMD semantic memory + proactive check-in instructions |
 | `groups/telegram_main/memory/` | New directory structure (context/profile.md, notes/daily-log.md, etc.) |
 
-**Status: NON-VIABLE ON CPU.** QMD uses `embeddinggemma` for vector embeddings. On the CPU-only Lightsail instance, computing embeddings for just 2 markdown files takes 5+ minutes — far too slow for inline use during agent queries. The QMD MCP server starts and the collection initializes correctly, but any `mcp__qmd__query` call hangs indefinitely waiting for embeddings.
+**QMD Status: REMOVED.** QMD was non-viable on CPU (5+ min to embed 2 files with local GGUF models). Replaced with a custom hybrid search system.
 
-**Options to fix:**
-1. Use a GPU-enabled instance (expensive, changes architecture)
-2. Replace `embeddinggemma` with a lighter model (if QMD supports it)
-3. Pre-compute embeddings on a GPU instance and copy the vector store
-4. Accept limitation — file-based memory (MEMORY.md) works well for current scale
+**Replacement: Custom Hybrid Memory Search (sqlite + FTS5 + Gemini Embeddings)**
+
+Architecture:
+- **Tier 3 (`embed_text.js`)**: Calls Gemini `gemini-embedding-001` API for text embeddings (3072-dim vectors)
+- **Tier 1 host (`memory-index.js`)**: Chunks markdown files (~384 tokens/chunk), batches embedding calls to Tier 3, stores in SQLite with FTS5 keyword index
+- **Tier 1 host (`memory-search.js`)**: Hybrid search — 70% vector cosine similarity + 30% BM25 keyword scoring, normalized and ranked
+- **Container (`memory-search-mcp.js`)**: MCP server exposing `memory_search` and `memory_status` tools. SSHes to host for actual search.
+- **Dispatch (`memory-search.sh`, `memory-reindex.sh`)**: Standard dispatch pattern with vault key retrieval and ops logging
+
+Performance: ~2-3 seconds per search (SSH to host → embed query via Tier 3 → search SQLite → return results). Indexing: ~30 seconds for 208 chunks across 5 files.
+
+Cost: Gemini embedding API is free tier / negligible at this scale.
 
 ## 16H.3 Proactive Check-ins
 
@@ -1436,7 +1444,7 @@ Full test suite run after resize and upgrade:
 | Gemini billing                    | No spending cap configured in Google AI Studio.                                                                                                           | **[OPEN]** User should set a budget alert in Google AI Studio to prevent runaway costs (architecture flaw F3). |
 | Vault backup                      | Single point of failure on vault encryption key.                                                                                                          | **[OPEN]** User should back up `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location (architecture flaw F5). |
 | Email unsubscribe automation      | User wants PhilClaw to auto-unsubscribe from bulk senders. RFC 8058 headers survive Gmail forwarding.                                                     | **[PENDING]** Investigation complete. Implementation of `unsubscribe.sh` dispatch not yet started. |
-| Persistent memory maturity        | NanoClaw memory system lacks vector search, pre-compaction flush, and auto fact extraction compared to OpenClaw.                                           | **[UPDATED]** QMD v2.0.1 deployed but embedding model is non-viable on CPU (Section 16H). File-based MEMORY.md works well at current scale. Vector search needs GPU or lighter model. |
+| Persistent memory maturity        | NanoClaw memory system lacks vector search, pre-compaction flush, and auto fact extraction compared to OpenClaw.                                           | **[MOSTLY RESOLVED]** Custom hybrid memory search deployed (Section 16H): Gemini cloud embeddings + SQLite + FTS5. Closes the vector search gap. Pre-compaction flush and auto fact extraction still pending. |
 
 
 # 18. Review Checklist by Reviewer Role
