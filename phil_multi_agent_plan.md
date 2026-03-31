@@ -44,6 +44,14 @@ Prepared for review by:
 > - Renamed tiers: Tier 1 → PhilClaw, Tier 2 → PortalClaw, Tier 3 → ReaderClaw (role names, distinct from underlying software)
 > - All 10/10 Telegram integration tests passing (email, search, usage, memory, multi-turn, restart persistence)
 > - Added Section 19: Guided Browsing Architecture — human-in-the-browser design for portal and shopping tasks that defeat bot detection using a home machine with residential IP, deterministic orchestrator (no LLM), and ReaderClaw analysis. Not yet implemented.
+>
+> **March 31, 2026:**
+> - PhilClaw instance doubled: `small_3_0` (2 GB) → `medium_3_0` (4 GB) via Lightsail snapshot + new instance + static IP migration
+> - NanoClaw Pro upgrade: QMD semantic memory bundle deployed via volume mount, proactive check-in scheduled tasks added
+> - QMD tested but **non-viable on CPU** — embedding model (`embeddinggemma`) takes 5+ min for 2 files, unusable inline. Needs GPU or lighter model.
+> - WebSearch/WebFetch tool blocking confirmed working via `disallowedTools` in agent-runner config
+> - Full test suite: 40/40 tests passed (ping, conversations, browser, phase3, recent features, lockdown, restart persistence)
+> - Added Section 16H: NanoClaw Pro Upgrade
 
 ---
 
@@ -92,6 +100,10 @@ Prepared for review by:
 16E. Persistent Memory System (March 29, 2026) — **[NEW]**
 
 16F. Heartbeat System (March 30, 2026) — **[NEW]**
+
+16G. Amazon Product Search (March 30, 2026) — **[NEW]**
+
+16H. NanoClaw Pro Upgrade (March 31, 2026) — **[NEW]**
 
 17. Open Questions & Risks — **[UPDATED]**
 
@@ -1180,7 +1192,7 @@ Updated `CLAUDE.md` in the group workspace to instruct the agent to:
 
 ## 16E.4 Gaps vs OpenClaw Memory
 
-- No semantic/vector memory search (sqlite-vec + Gemini embeddings would close this)
+- ~~No semantic/vector memory search~~ **[ATTEMPTED]** QMD v2.0.1 deployed via volume mount (Section 16H) but embedding model (`embeddinggemma`) is non-viable on CPU — 5+ min to embed 2 files. Needs GPU instance or a lighter embedding model to be usable.
 - No pre-compaction memory flush (agent must manually save before context truncation)
 - No automatic post-turn fact extraction (agent follows CLAUDE.md instructions, not built-in hooks)
 
@@ -1342,6 +1354,71 @@ Returns per ASIN:
 - Tier 2 (OpenClaw) is NOT used for Amazon browsing
 
 
+# 16H. NanoClaw Pro Upgrade (March 31, 2026)
+
+**[NEW SECTION]** Upgrade to add NanoClaw Pro features: QMD semantic memory and proactive check-ins.
+
+## 16H.1 Instance Resize
+
+PhilClaw was running on Lightsail `small_3_0` (2 GB RAM, 2 vCPUs). To support QMD embedding workloads and general headroom, the instance was doubled to `medium_3_0` (4 GB RAM, 2 vCPUs, 80 GB disk, $24/mo).
+
+**Migration method:** Lightsail snapshot → new instance from snapshot with larger bundle → static IP (174.129.11.27) detached from old, attached to new → old instance deleted. All data, services, and SSH keys preserved.
+
+**Note:** Lightsail instances take ~15 minutes for sshd to become available after cold start (cloud-init SSH key generation). This is expected behavior, not a failure.
+
+## 16H.2 QMD Semantic Memory
+
+QMD v2.0.1 deployed as a read-only volume mount (`~/qmd-bundle/` → `/opt/qmd` inside containers). The Docker image was NOT rebuilt (Tier 1 has no internet access for `docker pull`).
+
+**Files modified on Tier 1:**
+
+| File | Change |
+|------|--------|
+| `src/container-runner.ts` | Added QMD data dir mount + bundle mount |
+| `container/agent-runner/src/index.ts` | `initQmd()` function, QMD MCP server config, `mcp__qmd__*` in allowedTools |
+| `groups/telegram_main/CLAUDE.md` | QMD semantic memory + proactive check-in instructions |
+| `groups/telegram_main/memory/` | New directory structure (context/profile.md, notes/daily-log.md, etc.) |
+
+**Status: NON-VIABLE ON CPU.** QMD uses `embeddinggemma` for vector embeddings. On the CPU-only Lightsail instance, computing embeddings for just 2 markdown files takes 5+ minutes — far too slow for inline use during agent queries. The QMD MCP server starts and the collection initializes correctly, but any `mcp__qmd__query` call hangs indefinitely waiting for embeddings.
+
+**Options to fix:**
+1. Use a GPU-enabled instance (expensive, changes architecture)
+2. Replace `embeddinggemma` with a lighter model (if QMD supports it)
+3. Pre-compute embeddings on a GPU instance and copy the vector store
+4. Accept limitation — file-based memory (MEMORY.md) works well for current scale
+
+## 16H.3 Proactive Check-ins
+
+Two scheduled tasks added to NanoClaw's SQLite `scheduled_tasks` table:
+
+| Task | Cron | Purpose |
+|------|------|---------|
+| `proactive-morning-checkin` | `0 9 * * *` (9 AM ET) | Morning briefing with email summary, weather, calendar |
+| `proactive-afternoon-checkin` | `0 16 * * *` (4 PM ET) | Afternoon check-in with task review |
+
+These use NanoClaw's built-in scheduler, not host-level cron. The agent sends a proactive message to Telegram when the cron fires.
+
+## 16H.4 WebSearch/WebFetch Blocking
+
+Confirmed working. The `disallowedTools: ["WebSearch", "WebFetch"]` in agent-runner config prevents these tools from appearing in the agent's toolset. The agent reports them as "tool not found" when asked. Web access is routed through Tier 3 dispatch only.
+
+## 16H.5 Test Results (March 31, 2026)
+
+Full test suite run after resize and upgrade:
+
+| Test File | Tests | Result |
+|-----------|-------|--------|
+| `test_bot.py` | 1 | **PASS** |
+| `test_conversations.py` | 6 | **6/6 PASS** |
+| `test_browser.py` | 3 | **3/3 PASS** |
+| `test_phase3.py` | 5 | **5/5 PASS** |
+| `test_recent_features.py` | 10 | **10/10 PASS** |
+| `test_lockdown.py` | 6 | **6/6 PASS** |
+| `test_restart_persistence.py` | 10 | **10/10 PASS** |
+| `test_email.py` | 1 | **SKIPPED** (SMTP env vars not set) |
+| **Total** | **41** | **40/40 PASS, 1 SKIPPED** |
+
+
 # 17. Open Questions & Risks
 
 **[UPDATED]** Several original questions have been resolved by implementation decisions.
@@ -1359,7 +1436,7 @@ Returns per ASIN:
 | Gemini billing                    | No spending cap configured in Google AI Studio.                                                                                                           | **[OPEN]** User should set a budget alert in Google AI Studio to prevent runaway costs (architecture flaw F3). |
 | Vault backup                      | Single point of failure on vault encryption key.                                                                                                          | **[OPEN]** User should back up `~/.config/nanoclaw/vault/vault-key.txt` to a secure offline location (architecture flaw F5). |
 | Email unsubscribe automation      | User wants PhilClaw to auto-unsubscribe from bulk senders. RFC 8058 headers survive Gmail forwarding.                                                     | **[PENDING]** Investigation complete. Implementation of `unsubscribe.sh` dispatch not yet started. |
-| Persistent memory maturity        | NanoClaw memory system lacks vector search, pre-compaction flush, and auto fact extraction compared to OpenClaw.                                           | **[OPEN]** Current file-based system works for basic persistence. May need sqlite-vec for scaling. |
+| Persistent memory maturity        | NanoClaw memory system lacks vector search, pre-compaction flush, and auto fact extraction compared to OpenClaw.                                           | **[UPDATED]** QMD v2.0.1 deployed but embedding model is non-viable on CPU (Section 16H). File-based MEMORY.md works well at current scale. Vector search needs GPU or lighter model. |
 
 
 # 18. Review Checklist by Reviewer Role
