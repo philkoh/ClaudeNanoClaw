@@ -104,7 +104,7 @@ Prepared for review by:
 
 16G. Amazon Product Search (March 30, 2026) — **[NEW]**
 
-16H. NanoClaw Pro Upgrade (March 31, 2026) — **[NEW]**
+16H. Memory Search & Cache Optimization (March 31, 2026) — **[NEW]**
 
 17. Open Questions & Risks — **[UPDATED]**
 
@@ -1355,76 +1355,90 @@ Returns per ASIN:
 - Tier 2 (OpenClaw) is NOT used for Amazon browsing
 
 
-# 16H. NanoClaw Pro Upgrade (March 31, 2026)
+# 16H. Memory Search & Cache Optimization (March 31, 2026)
 
-**[NEW SECTION]** Upgrade to add NanoClaw Pro features: QMD semantic memory and proactive check-ins.
+**[NEW SECTION]** Instance resize, hybrid memory search (replacing QMD), and Anthropic cache TTL optimization.
 
 ## 16H.1 Instance Resize
 
-PhilClaw was running on Lightsail `small_3_0` (2 GB RAM, 2 vCPUs). To support QMD embedding workloads and general headroom, the instance was doubled to `medium_3_0` (4 GB RAM, 2 vCPUs, 80 GB disk, $24/mo).
+PhilClaw doubled from Lightsail `small_3_0` (2 GB) → `medium_3_0` (4 GB RAM, 2 vCPUs, 80 GB disk, $24/mo). Migration via snapshot → new instance → static IP swap → old instance deleted.
 
-**Migration method:** Lightsail snapshot → new instance from snapshot with larger bundle → static IP (174.129.11.27) detached from old, attached to new → old instance deleted. All data, services, and SSH keys preserved.
+**Note:** Lightsail instances take ~15 minutes for sshd to become available after cold start.
 
-**Note:** Lightsail instances take ~15 minutes for sshd to become available after cold start (cloud-init SSH key generation). This is expected behavior, not a failure.
+## 16H.2 Hybrid Memory Search (Replaces QMD)
 
-## 16H.2 QMD Semantic Memory
+QMD v2.0.1 was tested but non-viable on CPU (local GGUF embedding models took 5+ min for 2 files). Removed entirely and replaced with a custom hybrid search system using **Gemini cloud embeddings**.
 
-QMD v2.0.1 deployed as a read-only volume mount (`~/qmd-bundle/` → `/opt/qmd` inside containers). The Docker image was NOT rebuilt (Tier 1 has no internet access for `docker pull`).
+**Architecture:**
 
-**Files modified on Tier 1:**
+| Component | Location | Role |
+|---|---|---|
+| `embed_text.js` | Tier 3 | Gemini `gemini-embedding-001` API (3072-dim vectors) |
+| `memory-index.js` | Tier 1 host | Chunks markdown (~384 tokens/chunk), batches embeddings via Tier 3, stores in SQLite + FTS5 |
+| `memory-search.js` | Tier 1 host | Hybrid 70% vector cosine + 30% BM25 keyword scoring |
+| `memory-search-mcp.js` | Container | MCP server exposing `memory_search` and `memory_status` tools (SSHes to host) |
+| `memory-search.sh` | Tier 1 dispatch | Standard dispatch with vault/ops-log/timing |
+| `memory-reindex.sh` | Tier 1 dispatch | Trigger re-indexing after memory file changes |
 
-| File | Change |
-|------|--------|
-| `src/container-runner.ts` | Added QMD data dir mount + bundle mount |
-| `container/agent-runner/src/index.ts` | `initQmd()` function, QMD MCP server config, `mcp__qmd__*` in allowedTools |
-| `groups/telegram_main/CLAUDE.md` | QMD semantic memory + proactive check-in instructions |
-| `groups/telegram_main/memory/` | New directory structure (context/profile.md, notes/daily-log.md, etc.) |
+**Performance:** ~2-3s per search, ~30s to index 208 chunks across 5 files. Zero GPU needed.
 
-**QMD Status: REMOVED.** QMD was non-viable on CPU (5+ min to embed 2 files with local GGUF models). Replaced with a custom hybrid search system.
+**Security:** Gemini sees text chunks for embedding (same trust boundary as Tier 3 web search). SQLite index stays on Tier 1. Container accesses search via SSH dispatch (no direct API access).
 
-**Replacement: Custom Hybrid Memory Search (sqlite + FTS5 + Gemini Embeddings)**
+## 16H.3 Cache TTL Optimization
 
-Architecture:
-- **Tier 3 (`embed_text.js`)**: Calls Gemini `gemini-embedding-001` API for text embeddings (3072-dim vectors)
-- **Tier 1 host (`memory-index.js`)**: Chunks markdown files (~384 tokens/chunk), batches embedding calls to Tier 3, stores in SQLite with FTS5 keyword index
-- **Tier 1 host (`memory-search.js`)**: Hybrid search — 70% vector cosine similarity + 30% BM25 keyword scoring, normalized and ranked
-- **Container (`memory-search-mcp.js`)**: MCP server exposing `memory_search` and `memory_status` tools. SSHes to host for actual search.
-- **Dispatch (`memory-search.sh`, `memory-reindex.sh`)**: Standard dispatch pattern with vault key retrieval and ops logging
+**Problem:** Anthropic's default prompt cache TTL is 5 minutes. PhilClaw's ~27K token context must be re-cached on every cold start (~$0.16 and ~5-6s extra latency per occurrence). With typical usage gaps of 30-70 minutes, every message was a cold start.
 
-Performance: ~2-3 seconds per search (SSH to host → embed query via Tier 3 → search SQLite → return results). Indexing: ~30 seconds for 208 chunks across 5 files.
+**Solution: 1-hour TTL + keep-warm timer (Option C)**
 
-Cost: Gemini embedding API is free tier / negligible at this scale.
+1. **Credential proxy TTL injection** — The proxy intercepts API requests and adds `"ttl":"1h"` to all `cache_control` blocks via JSON traversal. Verified working: cache survives 7+ minute gaps.
 
-## 16H.3 Proactive Check-ins
+2. **Keep-warm systemd timer** (`cache-keepwarm.timer`) — Fires every 55 minutes, sends a minimal API request through the proxy. Smart skip: if a real request happened within 50 minutes, the ping is suppressed.
 
-Two scheduled tasks added to NanoClaw's SQLite `scheduled_tasks` table:
+3. **Context reduction** — Plan document (128K chars / ~32K tokens) moved from group workspace to `~/NanoClaw/reference/`. Context dropped from ~62K to ~27K tokens (56% reduction).
+
+**Cost comparison (28K context, messages every 30-70 min, 14-18 hr/day):**
+
+| Approach | Daily cost | Cold starts |
+|---|---|---|
+| Default 5-min TTL | $1.50-2.94 | Every idle gap |
+| **1-hr TTL + hourly ping** | **$0.40-0.52** | **0** |
+
+Cache write cost: $6.00/1M tokens (1h) vs $3.75/1M (5m). Cache read cost: $0.30/1M (same for both). Break-even after 2 cache reads.
+
+## 16H.4 Cache Monitoring (3 Layers)
+
+| Layer | What | When |
+|---|---|---|
+| **Usage report** (`/usage`) | Cache hit rate, cold starts, $ cost breakdown per provider/model | On demand via Telegram |
+| **Heartbeat** (check #7) | Cache health, keep-warm status, context size anomalies | Every 15 min, Telegram alert on issues |
+| **Weekly trend** (cron) | Context growth, hit rate, cost trends over time | Sundays at midnight UTC → `weekly_trends.log` |
+
+## 16H.5 Proactive Check-ins
+
+Two scheduled tasks in NanoClaw's SQLite `scheduled_tasks`:
 
 | Task | Cron | Purpose |
 |------|------|---------|
-| `proactive-morning-checkin` | `0 9 * * *` (9 AM ET) | Morning briefing with email summary, weather, calendar |
-| `proactive-afternoon-checkin` | `0 16 * * *` (4 PM ET) | Afternoon check-in with task review |
+| `proactive-morning-checkin` | `0 9 * * *` (9 AM ET) | Morning briefing |
+| `proactive-afternoon-checkin` | `0 16 * * *` (4 PM ET) | Afternoon check-in |
 
-These use NanoClaw's built-in scheduler, not host-level cron. The agent sends a proactive message to Telegram when the cron fires.
+## 16H.6 WebSearch/WebFetch Blocking
 
-## 16H.4 WebSearch/WebFetch Blocking
+Confirmed working. `disallowedTools: ["WebSearch", "WebFetch"]` prevents tools from appearing in agent's toolset. Web access routed through Tier 3 dispatch only.
 
-Confirmed working. The `disallowedTools: ["WebSearch", "WebFetch"]` in agent-runner config prevents these tools from appearing in the agent's toolset. The agent reports them as "tool not found" when asked. Web access is routed through Tier 3 dispatch only.
+## 16H.7 Test Results (March 31, 2026)
 
-## 16H.5 Test Results (March 31, 2026)
-
-Full test suite run after resize and upgrade:
+Full test suite after all changes: **40/40 PASS** (1 skipped — email compose needs SMTP env vars).
 
 | Test File | Tests | Result |
 |-----------|-------|--------|
-| `test_bot.py` | 1 | **PASS** |
-| `test_conversations.py` | 6 | **6/6 PASS** |
-| `test_browser.py` | 3 | **3/3 PASS** |
-| `test_phase3.py` | 5 | **5/5 PASS** |
-| `test_recent_features.py` | 10 | **10/10 PASS** |
-| `test_lockdown.py` | 6 | **6/6 PASS** |
-| `test_restart_persistence.py` | 10 | **10/10 PASS** |
-| `test_email.py` | 1 | **SKIPPED** (SMTP env vars not set) |
-| **Total** | **41** | **40/40 PASS, 1 SKIPPED** |
+| `test_bot.py` | 1 | PASS |
+| `test_conversations.py` | 6 | 6/6 PASS |
+| `test_browser.py` | 3 | 3/3 PASS |
+| `test_phase3.py` | 5 | 5/5 PASS |
+| `test_recent_features.py` | 10 | 10/10 PASS |
+| `test_lockdown.py` | 6 | 6/6 PASS |
+| `test_restart_persistence.py` | 10 | 10/10 PASS |
 
 
 # 17. Open Questions & Risks
