@@ -11,11 +11,15 @@ SEARCH_SCRIPT="/home/ubuntu/scripts/memory-search.js"
 
 T_START=$(date +%s%3N)
 
+T_VAULT=$(date +%s%3N)
 GEMINI_KEY=$(bash "$VAULT" get gemini-api key)
+T_VAULT_DONE=$(date +%s%3N)
 
+T_SEARCH=$(date +%s%3N)
 RESULT=$(GEMINI_API_KEY="$GEMINI_KEY" NODE_PATH=/home/ubuntu/NanoClaw/node_modules node "$SEARCH_SCRIPT" "$DB_PATH" "$QUERY" "$LIMIT" 2>&1) || true
+T_SEARCH_DONE=$(date +%s%3N)
 
-T_DONE=$(date +%s%3N)
-bash "$OPS_LOG" "Memory search: query='${QUERY:0:80}' time=$((T_DONE-T_START))ms (${#RESULT} chars)"
+LINES=$(echo "$RESULT" | wc -l)
+bash "$OPS_LOG" "Memory search: vault=$((T_VAULT_DONE-T_VAULT))ms search=$((T_SEARCH_DONE-T_SEARCH))ms total=$((T_SEARCH_DONE-T_START))ms query='${QUERY:0:80}' ($LINES lines, ${#RESULT} chars)"
 
 echo "$RESULT"
