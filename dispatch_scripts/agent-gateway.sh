@@ -108,6 +108,47 @@ case "$SCRIPT_PATH" in
     fi
     exec bash "$SCRIPT_PATH" "$ARGS"
     ;;
+  /home/ubuntu/dispatch/memory-search.sh)
+    # Args: quoted search query, optional limit
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: memory-search.sh requires a query" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" "$ARGS"
+    ;;
+  /home/ubuntu/dispatch/memory-reindex.sh)
+    # Args: optional group folder name
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
+  /home/ubuntu/dispatch/image-describe.sh)
+    # Args: image-path [prompt]
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: image-describe.sh requires image path" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
+  /home/ubuntu/dispatch/usage-lastcall.sh)
+    # Args: optional count (integer)
+    if [ -n "$ARGS" ] && ! [[ "$ARGS" =~ ^[0-9]+$ ]]; then
+      echo "ERROR: usage-lastcall.sh accepts only an integer count" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" $ARGS
+    ;;
+  /home/ubuntu/dispatch/create-draft.sh)
+    # Args: single base64-encoded JSON payload (no spaces, safe charset)
+    if [ -z "$ARGS" ]; then
+      echo "ERROR: create-draft.sh requires a base64-encoded JSON payload" >&2
+      exit 1
+    fi
+    # Validate: base64 charset only (A-Z, a-z, 0-9, +, /, =)
+    if ! [[ "$ARGS" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+      echo "ERROR: Invalid base64 payload" >&2
+      exit 1
+    fi
+    exec bash "$SCRIPT_PATH" "$ARGS"
+    ;;
   *)
     echo "ERROR: Script not allowed: $SCRIPT_PATH" >&2
     exit 1
