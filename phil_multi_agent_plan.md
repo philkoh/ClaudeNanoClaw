@@ -598,7 +598,105 @@ Two additional outgoing channels may be useful as the system matures. Both share
 
 These are not included in the initial rollout but require no architectural changes to add — just a new vault entry for the API credentials and a new egress rule on Tier 1.
 
-## 8.6 Security Properties Summary
+## 8.7 Virtual Credit Card Purchases (Privacy.com) — **[PLANNED]**
+
+**[PLANNED — not yet implemented.** No Privacy.com account, API credentials, or egress rules exist. The `/shop` Amazon flow (Section 16G) currently returns read-only product data with no purchasing capability. This section describes the purchasing extension.**]**
+
+Automated purchasing via Privacy.com virtual credit cards, with a hardware-enforced human approval gate. Extends the existing Amazon `/shop` pipeline from read-only product discovery through to actual checkout, while ensuring the bot can never authorize a charge on its own.
+
+### 8.7.1 Architecture
+
+PhilClaw (Tier 1) manages all Privacy.com API calls directly — same security rationale as email SMTP: outgoing financial API calls return only structured JSON, and keeping them on Tier 1 means credentials never leave the most-protected host.
+
+Uses 1-2 **Everywhere Cards** with rolling `LIFETIME` spend limits. This avoids Privacy.com's monthly card creation cap — rather than minting a disposable card per purchase, the bot reuses the same card and ratchets the lifetime limit upward by exactly the next purchase amount before each transaction.
+
+**Critical design constraint:** The bot has no unpause capability. Phil unpauses the card directly from the Privacy.com iPhone app. This is a true out-of-band human-in-the-loop gate — even a fully compromised PhilClaw instance cannot authorize a charge.
+
+### 8.7.2 Transaction Flow
+
+```
+1.  Bot calculates purchase amount from validated product data
+2.  Bot reads current total_spend from Privacy.com API
+    (idempotency — never assume the balance, always read)
+3.  Bot sets spend_limit = current_total_spend + purchase_amount + preauth_buffer
+    with spend_limit_duration = LIFETIME
+4.  Card remains PAUSED — bot sends Telegram notification:
+      "Ready to purchase: [product] from [merchant]
+       Amount: $XX.XX  |  Buffer: +X%  |  New limit: $YY.YY
+       ➜ Open Privacy.com app → tap Unpause on card [last 4]
+       Reply DONE when unpaused, or CANCEL to abort."
+5.  Phil reviews on iPhone → opens Privacy.com app → taps Unpause
+6.  Phil replies "done" to bot (or bot polls card state via API)
+7.  Bot executes the purchase
+8.  Card auto-maxes — spend_limit = total_spend, zero remaining headroom
+    (even if the bot crashes at this point, no further charges can occur)
+9.  Bot pauses the card via API (belt-and-suspenders)
+10. Bot logs transaction to append-only audit log
+11. Bot confirms to user via Telegram
+```
+
+### 8.7.3 Bot API Permissions (3 Operations Only)
+
+| Operation | API Endpoint | Purpose |
+|-----------|-------------|---------|
+| Read card state + total spend | `GET /v1/card` | Idempotency check before setting limits |
+| Set spend limit | `PATCH /v1/card` | Ratchet lifetime limit for next purchase |
+| Pause card | `PATCH /v1/card` (state=PAUSED) | Post-purchase lockdown |
+
+The bot **never** calls the unpause endpoint. That is exclusively Phil's action via the Privacy.com iPhone app.
+
+### 8.7.4 Safety Layers
+
+| Layer | Protects Against |
+|-------|-----------------|
+| Lifetime limit = current spend + next purchase only | Runaway bot, unexpected charges |
+| Card stays paused until human approves via iPhone app | Race conditions, premature auths, full bot compromise |
+| Idempotency check (read total_spend before setting limit) | Double-bumped limits from retries |
+| Preauth buffer (merchant-type-dependent) | Merchant authorization holds exceeding stated price |
+| Post-purchase pause (belt-and-suspenders) | Residual headroom if limit math has rounding errors |
+| iPhone approval gate (out-of-band) | True human-in-the-loop — bot cannot unpause even if fully compromised |
+| Append-only audit log | Forensics, reconciliation, dispute resolution |
+
+### 8.7.5 Preauth Buffer Guide
+
+| Merchant Type | Buffer | Rationale |
+|---------------|--------|-----------|
+| Standard retail / online | +5% | Minor rounding, tax variations |
+| Hotels / car rental | +20% | Security deposits, incidental holds |
+| Restaurants (tip expected) | +25% | Gratuity headroom |
+
+### 8.7.6 Account Limits to Track
+
+- **Card creation limit** — monthly cap per plan tier (Plus=24, Pro=36, Premium=60). This is why we reuse Everywhere Cards with rolling limits.
+- **Monthly spend limit** — per-account, grows with usage history. Bot should check remaining headroom before initiating a purchase.
+- **Transaction velocity** — 10/day baseline. Bot tracks daily count and warns if approaching the limit.
+
+### 8.7.7 Implementation Plan
+
+| Component | Details |
+|-----------|---------|
+| Privacy.com account | Plus plan ($5/month minimum) for API access |
+| Vault entry | `privacy-com`: type=api, field: `api_key` |
+| UFW egress | `sudo ufw allow out to api.privacy.com port 443` |
+| Dispatch script | `privacy-card.sh` — subcommands: `read-state`, `set-limit`, `pause` |
+| Container skill | `purchase/SKILL.md` — `/purchase` command |
+| Audit log | Append-only JSONL at `/home/ubuntu/logs/purchases.jsonl` |
+| Integration | Extends `/shop` flow: discover → validate → purchase |
+
+Audit log schema:
+```json
+{"ts":"2026-04-15T14:32:01Z","merchant":"Amazon.com","product":"Apple AirPods Pro","intended_amount":189.99,"preauth_buffer_pct":5,"limit_set":199.49,"prior_total_spend":0.00,"actual_charge":189.99,"card_last4":"7742","card_state_after":"PAUSED"}
+```
+
+### 8.7.8 Security Notes
+
+- All Privacy.com API calls originate from Tier 1 directly — never dispatched to Tier 2 or Tier 3
+- API key in Tier 1 encrypted vault, never exposed to container or LLM
+- Bot has no unpause capability — cannot authorize charges even if fully compromised
+- Audit log on host filesystem, outside container bind mounts
+- Privacy.com API returns only structured JSON (card state, spend totals, status codes) — no free-form content, no prompt injection surface
+
+## 8.8 Security Properties Summary
 
 | Channel            | Protocol            | Runs On | Egress Target                   | Inbound Content Risk |
 |------------------------|-------------------------|-------------|-------------------------------------|--------------------------|
@@ -606,6 +704,7 @@ These are not included in the initial rollout but require no architectural chang
 | Calendar invites       | SMTP + ICS attachment   | Tier 1      | Same as email                       | None                     |
 | Calendar management    | REST API (Graph/Google) | Tier 1      | graph.microsoft.com, googleapis.com | Structured JSON only     |
 | Internet fax           | REST API or SMTP        | Tier 1      | api.fax.plus or via SMTP            | None (status codes only) |
+| Virtual card purchases | REST API (Privacy.com)  | Tier 1      | api.privacy.com                     | Structured JSON only     |
 | SMS (future)           | REST API (Twilio)       | Tier 1      | api.twilio.com                      | None (status codes only) |
 | Physical mail (future) | REST API (Lob)          | Tier 1      | api.lob.com                         | None (tracking ID only)  |
 
