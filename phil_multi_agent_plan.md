@@ -247,7 +247,7 @@ Current vault entries (4 total):
 
 | Entry | Type | Purpose |
 |-------|------|---------|
-| gmail-smtp | smtp | Outgoing email via smtp.gmail.com:465 |
+| gmail-smtp | smtp | Outgoing email via smtp.gmail.com:465 (implicit TLS), user=philkoh.admin@gmail.com |
 | gemini-api | api_key | Gemini API key for Tier 3 |
 | gmail-imap | imap | Gmail IMAP for Tier 3 email reading |
 | anthropic-api | api_key | Anthropic API key for PortalClaw (Tier 2 OpenClaw) |
@@ -521,14 +521,15 @@ Routing outgoing messages through Tier 2 would add unnecessary risk: the message
 **[IMPLEMENTED]** Gmail SMTP is fully working. End-to-end test passed:
 1. User sends draft request via Telegram → bot drafts email via `draft_email` MCP tool → writes to IPC
 2. Host presents draft to user via Telegram with approval prompt
-3. User replies YES → `send-email.js` reads SMTP creds from vault → sends via nodemailer (smtp.gmail.com:465)
-4. Confirmation sent to user
+3. User replies YES → host `ipc.ts` calls `send-email.js` via execSync → reads SMTP creds from vault → sends via nodemailer (smtp.gmail.com:465 implicit TLS)
+4. Confirmation sent to user via Telegram
 
 Key files on Tier 1:
 - `/home/ubuntu/NanoClaw/scripts/send-email.js` — Deterministic send script (LLM never touches this)
-- `draft_email` MCP tool in container → writes to `/workspace/ipc/emails/`
-- Vault entry `gmail-smtp`: type=smtp, host=smtp.gmail.com, port=465
-- Postfix bound to `inet_interfaces=loopback-only` for local relay
+- `/home/ubuntu/NanoClaw/src/ipc.ts` — Host-side IPC watcher + email approval handler (pendingEmails map, YES/NO interception)
+- `/home/ubuntu/NanoClaw/container/agent-runner/src/ipc-mcp-stdio.ts` — `draft_email` MCP tool definition (writes to IPC)
+- IPC directory: `data/sessions/telegram_main/ipc/emails/` (bind-mounted into container as `/workspace/ipc/emails/`)
+- Vault entry `gmail-smtp`: type=smtp, host=smtp.gmail.com, port=465 (implicit TLS), user=philkoh.admin@gmail.com
 
 **[FIXED March 28]** Two stdin piping bugs in the email send pipeline were fixed: (1) `ipc.ts` used shell `echo` which interpreted `\n` in JSON, breaking email bodies with newlines — fixed by using `execSync` `input` option; (2) `send-email.js` used `readFileSync('/dev/stdin')` which doesn't work with `execSync` input piping — fixed by reading from fd 0.
 
