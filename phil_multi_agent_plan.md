@@ -533,7 +533,15 @@ Key files on Tier 1:
 
 **[FIXED March 28]** Two stdin piping bugs in the email send pipeline were fixed: (1) `ipc.ts` used shell `echo` which interpreted `\n` in JSON, breaking email bodies with newlines — fixed by using `execSync` `input` option; (2) `send-email.js` used `readFileSync('/dev/stdin')` which doesn't work with `execSync` input piping — fixed by reading from fd 0.
 
-**[PENDING]** Exchange SMTP (port 587) not yet configured.
+**[IMPLEMENTED April 2]** Exchange Draft Service — PhilClaw creates drafts directly in phil@emtera.com's Exchange mailbox via Microsoft Graph API (Mail.ReadWrite application permission). This is a **draft-only** service — PhilClaw cannot read mail or send, preserving the security model where ReaderClaw handles read and neither tier can send directly. Key components:
+- Azure AD app: "PhilClaw Draft Service" (tenant: emtera.com, app: 4b39606e-7587-4285-9d10-281de5214f1c)
+- Vault entry: `msgraph-drafts` (tenant_id, client_id, client_secret, user_email)
+- Dispatch script: `create-draft.sh` (accepts base64 JSON, calls Graph API via curl)
+- Container skill: `email-draft/SKILL.md`
+- UFW rules: Microsoft Identity (20.190.190.0/24, 40.126.62.0/24) + Graph API (20.190.151.0/24, 40.126.23.0/24) on port 443
+- End-to-end tested via Telegram: 20s response time, draft appears in Outlook Drafts folder
+
+**[PENDING]** Exchange SMTP (port 587) not yet configured — outbound sending still uses Gmail SMTP only.
 
 Email is the primary outgoing communication channel. The workflow:
 
@@ -954,7 +962,8 @@ The following catalog represents the initial target capability set, organized by
 
 - ~~Configure outgoing email: set up SMTP credentials in vault, test send workflow with user approval~~ **[DONE]** — Gmail SMTP working. compose→approve→send cycle tested end-to-end via Telegram.
 
-- Test compose → approve → send cycle for Exchange **[PENDING]** — Exchange SMTP not yet configured.
+- ~~Exchange draft service~~ **[DONE April 2]** — PhilClaw creates Exchange drafts via Microsoft Graph API. End-to-end Telegram test passed (20s).
+- Test compose → approve → send cycle for Exchange **[PENDING]** — Exchange SMTP not yet configured (drafts work, sending does not).
 
 ## 15.4 Phase 3–4: Expanding Autonomy (Months 2–3+)
 
@@ -1447,7 +1456,7 @@ Full test suite after all changes: **40/40 PASS** (1 skipped — email compose n
 
 | Question / Risk               | Context                                                                                                                                               | Status / Resolution                                                                                                                                                             |
 |-----------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Exchange read-only access method  | Microsoft Exchange can be accessed via IMAP, EWS, or Graph API.                                                                                          | **[PENDING]** Gmail IMAP implemented. Exchange access deferred until user sets up forwarding (phil@emtera.com → philkoh.admin@gmail.com). |
+| Exchange read-only access method  | Microsoft Exchange can be accessed via IMAP, EWS, or Graph API.                                                                                          | **[PARTIALLY RESOLVED]** Gmail IMAP implemented for reading. Exchange Graph API (Mail.ReadWrite) used for draft creation (April 2). Read-only Exchange access still deferred. |
 | Tier 1 location: cloud vs. local? | Running Tier 1 locally gives maximum physical control. Running on Lightsail gives better uptime.                                                          | **[RESOLVED]** Deployed on Lightsail. Vault encrypted via age. Admin workstation also on cloud (100.49.113.22) for multi-device access. |
 | Gemini search dependency          | The system depends on Gemini’s native search grounding working outside Docker. If Google changes this, Tier 3 may break.                                  | **[UNCHANGED]** Risk accepted. Tier 3 uses Gemini 2.5 Flash with grounded search. Monitor for API changes. |
 | NanoClaw maturity                 | NanoClaw is under active development by a small team.                                                                                                     | **[UPDATED]** Running NanoClaw v1.2.17 with claude-agent-sdk v0.2.76. Has proven stable through testing. Keep version pinned. |
@@ -1817,7 +1826,7 @@ The 2-tap Share Sheet approach is recommended as the starting point: create an i
 | Home machine is minimal attack surface | No inbound HTTP. SSH only from PhilClaw. Chrome debugging on localhost only. No stored credentials beyond SSH authorized_keys for PhilClaw. |
 
 
-*END OF DOCUMENT (March 30, 2026)*
+*END OF DOCUMENT (April 2, 2026)*
 
 ---
 
