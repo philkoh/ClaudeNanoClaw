@@ -7,6 +7,12 @@ description: Check, summarize, and search email via Tier 3 (IMAP). Use when user
 
 Two dispatch tools for email: **summary** (broad overview) and **detail** (targeted lookup).
 
+## Email account you read
+
+The email triage reads **philkoh.admin@gmail.com** via IMAP. This is Phil's admin inbox. Emails forwarded from **phil@emtera.com** (his Exchange/Outlook account) also arrive here. When Phil asks you to check email, browse recent messages, or search for something — you CAN do this. You have full read access to the philkoh.admin@gmail.com inbox.
+
+**Do NOT confuse this with pk14225@gmail.com** — that is a different account and is NOT what the triage reads.
+
 ## Tool 1: Email Summary (broad inbox overview)
 
 Use when the user asks to "check email", "any new emails?", or wants a general inbox briefing.

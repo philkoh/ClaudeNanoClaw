@@ -47,12 +47,11 @@ Prepared for review by:
 >
 > **March 31, 2026:**
 > - PhilClaw instance doubled: `small_3_0` (2 GB) → `medium_3_0` (4 GB) via Lightsail snapshot + new instance + static IP migration
-> - NanoClaw Pro upgrade: QMD semantic memory bundle deployed via volume mount, proactive check-in scheduled tasks added
-> - QMD tested but **non-viable on CPU** — embedding model (`embeddinggemma`) takes 5+ min for 2 files, unusable inline.
-> - **Replaced QMD with custom hybrid memory search**: sqlite + FTS5 + Gemini cloud embeddings (text-embedding-001 via Tier 3). Hybrid 70% vector + 30% BM25 scoring. Works instantly on CPU — no GPU needed.
+> - QMD (from NanoClaw Pro, now defunct/404) tested but **non-viable on CPU** — embedding model took 5+ min for 2 files. Removed entirely.
+> - **Custom hybrid memory search deployed**: SQLite + FTS5 + Gemini cloud embeddings (text-embedding-001 via Tier 3). Hybrid 70% vector + 30% BM25 scoring. Works instantly on CPU — no GPU needed.
 > - WebSearch/WebFetch tool blocking confirmed working via `disallowedTools` in agent-runner config
 > - Full test suite: 40/40 tests passed (ping, conversations, browser, phase3, recent features, lockdown, restart persistence)
-> - Added Section 16H: NanoClaw Pro Upgrade → Memory Search System
+> - Added Section 16H: Memory Search & Cache Optimization
 
 ---
 
