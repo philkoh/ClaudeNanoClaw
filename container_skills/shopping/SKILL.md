@@ -7,7 +7,22 @@ description: Search Amazon for products with price and delivery info. Two-step: 
 
 Find products on Amazon with pricing, delivery dates, and stock status.
 
-## Two-Step Workflow
+## Workflow
+
+### Step 0 — Order History Check (always do this FIRST)
+
+Before searching Amazon, **always** check if Phil has bought something similar before:
+
+```bash
+ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu/dispatch/order-history-search.sh '<query>'"
+```
+
+This searches 3,400+ past Amazon orders across 3 accounts (JuliePhil, Emtera, KohEE). If there are matches:
+- Show Phil the previous purchase(s): product name, ASIN, price paid, date, which account
+- Include a reorder link: `https://www.amazon.com/dp/<ASIN>`
+- Ask: "You bought this before — want to reorder it, or search for something new?"
+
+If no matches, proceed to Step 1.
 
 ### Step 1 — Discovery (free, via Google)
 
@@ -39,7 +54,7 @@ ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu
 After presenting validated results, include an **Add to Cart** link for the recommended product:
 
 ```
-🛒 Tap to add to cart: https://www.amazon.com/dp/<ASIN>
+🛒 Tap to add to cart: https://www.amazon.com/gp/aws/cart/add.html?ASIN=<ASIN>&Quantity=1
 ```
 
 Replace `<ASIN>` with the actual ASIN from the validation results. This link opens the Amazon app on iPhone and adds the item to cart — Phil just taps "Proceed to checkout."
