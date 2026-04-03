@@ -602,15 +602,22 @@ These are not included in the initial rollout but require no architectural chang
 
 **[PLANNED — not yet implemented.** No Klutch Card account, API credentials, or egress rules exist. The `/shop` Amazon flow (Section 16G) currently returns read-only product data with no purchasing capability. This section describes the purchasing extension.**]**
 
-Automated purchasing via Klutch Card virtual Visa cards, with a hardware-enforced human approval gate. Extends the existing Amazon `/shop` pipeline from read-only product discovery through to actual checkout, while ensuring the bot can never authorize a charge on its own.
+Automated purchasing via Klutch Spend Card virtual Visa cards, with a hardware-enforced human approval gate. Extends the existing Amazon `/shop` pipeline from read-only product discovery through to actual checkout, while ensuring the bot can never authorize a charge on its own.
 
 ### 8.7.1 Architecture
 
 PhilClaw (Tier 1) manages all Klutch Card API calls directly — same security rationale as email SMTP: outgoing financial API calls return only structured JSON, and keeping them on Tier 1 means credentials never leave the most-protected host.
 
-Uses 1-2 reusable virtual cards with rolling spend limits enforced via **Transaction Rules**. Rather than minting a disposable card per purchase, the bot reuses the same card and ratchets a `StartEndDateTransactionRule` limit upward by exactly the next purchase amount before each transaction.
+Uses the **Klutch Spend Card** (collateralized prepaid Visa, not credit) with 1-2 reusable virtual cards and rolling spend limits enforced via **Transaction Rules**. Rather than minting a disposable card per purchase, the bot reuses the same card and ratchets a `StartEndDateTransactionRule` limit upward by exactly the next purchase amount before each transaction.
 
-**Why Klutch over Privacy.com:** Klutch is a Visa Signature credit card (not debit), has no monthly fee for API access (Essentials plan is free, 10 virtual cards/month), offers a full GraphQL API, and supports webhooks for real-time transaction events. Privacy.com requires $5/month for API access and is debit-only.
+**Why Klutch Spend Card:**
+- **Pre-funded** — you load only what you intend to spend. Maximum exposure = your deposit, even if all other safety layers fail.
+- **No credit check, no credit impact** — collateral-based, no hard pull, doesn't report to bureaus.
+- **Free API access** — Essentials plan ($0/month), same full GraphQL API as the credit product.
+- **Same API, same app** — Klutch explicitly states "Both products allows the use of mini-apps and all Klutch functionalities."
+- **vs Privacy.com** — Klutch has free API access (Privacy.com requires $5/month), sandbox for testing, webhooks, and the Spend Card's pre-funding model adds a hard ceiling that Privacy.com debit cards don't have.
+
+**Collateral note:** Deposits are held via Dwolla. Load only what you plan to spend in the near term — don't leave large balances sitting. Klutch had a banking partner collapse in 2024 (Synapse bankruptcy); they've since switched to Dwolla/Pier Financial.
 
 **Critical design constraint:** The bot has no unlock capability. Phil unlocks the card directly from the Klutch iPhone app. This is a true out-of-band human-in-the-loop gate — even a fully compromised PhilClaw instance cannot authorize a charge.
 
@@ -721,45 +728,48 @@ The bot **never** calls the `unlock` mutation. That is exclusively Phil's action
 
 ### 8.7.7 Klutch Account Setup Guide
 
-**Prerequisites:** US resident, 650+ credit score, SSN, US bank account.
+**Prerequisites:** US resident, SSN, US bank account. No credit check required for the Spend Card.
 
 **Step-by-step:**
 
-1. **Go to** `https://app.klutch.cards/apply/signup`
-2. **Create account** — enter email and password
-3. **Apply for credit card** — provide:
-   - Full legal name, date of birth, SSN
-   - Home address, phone number
-   - Annual income, employment status
-   - Klutch runs a **soft credit pull** (no impact on score)
-4. **Wait for approval** — most approved instantly, 90% within 1 business day
-5. **Link a bank account** — via Plaid for bill payments. Go to Account → Transfer Sources → Add
-6. **Download the Klutch app** on iPhone:
+1. **Go to** `https://app.klutch.cards/apply/choose-product`
+2. **Click "APPLY FOR SPEND CARD"** (right column — the prepaid/collateralized option, NOT the credit card)
+3. **Create account** — enter email and password
+4. **Provide identity info** — full legal name, date of birth, SSN, home address, phone number
+   - No credit check — SSN is for identity verification (Dwolla KYC) only
+5. **Open Dwolla account** — this is created automatically as part of signup to hold your collateral
+6. **Link a bank account** — via Plaid (instant) to fund the card. Go to Account → Transfer Sources → Add
+7. **Load collateral** — transfer funds from your bank via ACH into your Dwolla/Klutch balance
+   - Load only what you plan to spend in the near term (e.g. $200-500)
+   - ACH transfers take 1-3 business days
+   - Your spend limit = your collateral balance
+8. **Download the Klutch app** on iPhone:
    - Search "Klutch Card" in App Store, or: `https://apps.apple.com/us/app/klutch-card/id1563986090`
    - Log in with your account credentials
    - Verify you can see your card, lock/unlock it from the app
-7. **Create a virtual card** for bot purchases:
+9. **Create a virtual card** for bot purchases:
    - In the app or web: tap "+" / "New Card" → name it "Bot Purchase Card" → select Virtual
    - Note the card's last 4 digits
    - **Lock the card immediately** — it should stay locked until the first bot-initiated purchase
-8. **Generate API credentials:**
-   - Go to `https://app.klutch.cards` → My Account → Developers
-   - Create a new API key pair (clientId + secretKey)
-   - Save both securely — the secretKey is shown only once
-9. **Test in sandbox first:**
-   - Use `https://sandbox.klutchcard.com/graphql` to test all operations
-   - Simulate transactions with `sandbox { createTransaction(...) }` mutation
-10. **Provide API credentials to PhilClaw setup:**
+10. **Generate API credentials:**
+    - Go to `https://app.klutch.cards` → My Account → Developers
+    - Create a new API key pair (clientId + secretKey)
+    - Save both securely — the secretKey is shown only once
+11. **Test in sandbox first:**
+    - Use `https://sandbox.klutchcard.com/graphql` to test all operations
+    - Simulate transactions with `sandbox { createTransaction(...) }` mutation
+12. **Provide API credentials to PhilClaw setup:**
     - clientId and secretKey go into Tier 1 vault as `klutch-card` entry
     - Card ID goes into the dispatch script config
 
 **Account details:**
-- Card network: **Visa Signature**
-- Issuing bank: Evolve Bank and Trust
+- Card type: **Prepaid Visa** (collateralized, not credit)
+- Collateral held by: Dwolla
+- Credit check: **None**
 - Annual fee: **$0** (Essentials plan)
-- APR: 5%–25% variable
-- Cashback: 1% base (higher on Rewards/Metal plans)
+- Cashback: Yes (standard promotions)
 - Virtual cards: 10/month on free plan
+- Reload: ACH from linked bank account, spend when you want
 
 ### 8.7.8 Implementation Plan
 
