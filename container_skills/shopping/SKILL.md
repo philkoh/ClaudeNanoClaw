@@ -39,7 +39,7 @@ ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu
 After presenting validated results, include an **Add to Cart** link for the recommended product:
 
 ```
-🛒 Tap to add to cart: https://www.amazon.com/gp/aws/cart/add.html?ASIN=<ASIN>&Quantity=1
+🛒 Tap to add to cart: https://www.amazon.com/dp/<ASIN>
 ```
 
 Replace `<ASIN>` with the actual ASIN from the validation results. This link opens the Amazon app on iPhone and adds the item to cart — Phil just taps "Proceed to checkout."
