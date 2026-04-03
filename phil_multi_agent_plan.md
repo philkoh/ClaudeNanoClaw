@@ -598,64 +598,112 @@ Two additional outgoing channels may be useful as the system matures. Both share
 
 These are not included in the initial rollout but require no architectural changes to add — just a new vault entry for the API credentials and a new egress rule on Tier 1.
 
-## 8.7 Virtual Credit Card Purchases (Privacy.com) — **[PLANNED]**
+## 8.7 Virtual Credit Card Purchases (Klutch Card) — **[PLANNED]**
 
-**[PLANNED — not yet implemented.** No Privacy.com account, API credentials, or egress rules exist. The `/shop` Amazon flow (Section 16G) currently returns read-only product data with no purchasing capability. This section describes the purchasing extension.**]**
+**[PLANNED — not yet implemented.** No Klutch Card account, API credentials, or egress rules exist. The `/shop` Amazon flow (Section 16G) currently returns read-only product data with no purchasing capability. This section describes the purchasing extension.**]**
 
-Automated purchasing via Privacy.com virtual credit cards, with a hardware-enforced human approval gate. Extends the existing Amazon `/shop` pipeline from read-only product discovery through to actual checkout, while ensuring the bot can never authorize a charge on its own.
+Automated purchasing via Klutch Card virtual Visa cards, with a hardware-enforced human approval gate. Extends the existing Amazon `/shop` pipeline from read-only product discovery through to actual checkout, while ensuring the bot can never authorize a charge on its own.
 
 ### 8.7.1 Architecture
 
-PhilClaw (Tier 1) manages all Privacy.com API calls directly — same security rationale as email SMTP: outgoing financial API calls return only structured JSON, and keeping them on Tier 1 means credentials never leave the most-protected host.
+PhilClaw (Tier 1) manages all Klutch Card API calls directly — same security rationale as email SMTP: outgoing financial API calls return only structured JSON, and keeping them on Tier 1 means credentials never leave the most-protected host.
 
-Uses 1-2 **Everywhere Cards** with rolling `LIFETIME` spend limits. This avoids Privacy.com's monthly card creation cap — rather than minting a disposable card per purchase, the bot reuses the same card and ratchets the lifetime limit upward by exactly the next purchase amount before each transaction.
+Uses 1-2 reusable virtual cards with rolling spend limits enforced via **Transaction Rules**. Rather than minting a disposable card per purchase, the bot reuses the same card and ratchets a `StartEndDateTransactionRule` limit upward by exactly the next purchase amount before each transaction.
 
-**Critical design constraint:** The bot has no unpause capability. Phil unpauses the card directly from the Privacy.com iPhone app. This is a true out-of-band human-in-the-loop gate — even a fully compromised PhilClaw instance cannot authorize a charge.
+**Why Klutch over Privacy.com:** Klutch is a Visa Signature credit card (not debit), has no monthly fee for API access (Essentials plan is free, 10 virtual cards/month), offers a full GraphQL API, and supports webhooks for real-time transaction events. Privacy.com requires $5/month for API access and is debit-only.
+
+**Critical design constraint:** The bot has no unlock capability. Phil unlocks the card directly from the Klutch iPhone app. This is a true out-of-band human-in-the-loop gate — even a fully compromised PhilClaw instance cannot authorize a charge.
 
 ### 8.7.2 Transaction Flow
 
 ```
 1.  Bot calculates purchase amount from validated product data
-2.  Bot reads current total_spend from Privacy.com API
+2.  Bot reads current total spend via sumTransactions GraphQL query
     (idempotency — never assume the balance, always read)
-3.  Bot sets spend_limit = current_total_spend + purchase_amount + preauth_buffer
-    with spend_limit_duration = LIFETIME
-4.  Card remains PAUSED — bot sends Telegram notification:
+3.  Bot deletes old spend-cap rule (if any), creates new StartEndDateTransactionRule:
+      limitAmount = current_total_spend + purchase_amount + preauth_buffer
+    This caps total lifetime spend on the card at exactly the intended amount
+4.  Card remains LOCKED — bot sends Telegram notification:
       "Ready to purchase: [product] from [merchant]
-       Amount: $XX.XX  |  Buffer: +X%  |  New limit: $YY.YY
-       ➜ Open Privacy.com app → tap Unpause on card [last 4]
-       Reply DONE when unpaused, or CANCEL to abort."
-5.  Phil reviews on iPhone → opens Privacy.com app → taps Unpause
-6.  Phil replies "done" to bot (or bot polls card state via API)
+       Amount: $XX.XX  |  Buffer: +X%  |  Limit set: $YY.YY
+       ➜ Open Klutch app → tap Unlock on card [last 4]
+       Reply DONE when unlocked, or CANCEL to abort."
+5.  Phil reviews on iPhone → opens Klutch app → taps Unlock
+6.  Phil replies "DONE" to bot (or bot polls card lockState via API)
 7.  Bot executes the purchase
-8.  Card auto-maxes — spend_limit = total_spend, zero remaining headroom
+8.  Rule auto-caps — no remaining headroom beyond intended purchase
     (even if the bot crashes at this point, no further charges can occur)
-9.  Bot pauses the card via API (belt-and-suspenders)
+9.  Bot locks the card via lock mutation (belt-and-suspenders)
 10. Bot logs transaction to append-only audit log
 11. Bot confirms to user via Telegram
 ```
 
-### 8.7.3 Bot API Permissions (3 Operations Only)
+### 8.7.3 Klutch GraphQL API — Bot Operations
 
-| Operation | API Endpoint | Purpose |
-|-----------|-------------|---------|
-| Read card state + total spend | `GET /v1/card` | Idempotency check before setting limits |
-| Set spend limit | `PATCH /v1/card` | Ratchet lifetime limit for next purchase |
-| Pause card | `PATCH /v1/card` (state=PAUSED) | Post-purchase lockdown |
+All calls are `POST https://graphql.klutchcard.com/graphql` with `Authorization: Bearer <session_token>`.
 
-The bot **never** calls the unpause endpoint. That is exclusively Phil's action via the Privacy.com iPhone app.
+**Authentication:**
+```graphql
+mutation { createSessionToken(clientId: "<id>", secretKey: "<key>") }
+```
+
+**Read total spend (idempotency check):**
+```graphql
+query {
+  sumTransactions(filter: {
+    cardIds: ["<card-id>"],
+    transactionStatus: ["PENDING", "SETTLED"],
+    transactionTypes: ["CHARGE"]
+  })
+}
+```
+
+**Set spend cap (create transaction rule):**
+```graphql
+mutation {
+  createTransactionRule(
+    name: "spend-cap-<card-id>",
+    displayName: "Bot Spend Cap",
+    cardIds: ["<card-id>"],
+    spec: {
+      specType: "StartEndDateTransactionRule",
+      startDate: "2026-01-01T00:00:00Z",
+      endDate: "2036-01-01T00:00:00Z",
+      limitAmount: 199.49
+    }
+  ) { id }
+}
+```
+
+**Delete old rule before updating:**
+```graphql
+mutation { transactionRule(id: "<rule-id>") { delete } }
+```
+
+**Lock card (post-purchase):**
+```graphql
+mutation { card(id: "<card-id>") { lock { id status } } }
+```
+
+**Read card state:**
+```graphql
+query { cards { id name status lockState lastFour } }
+```
+
+The bot **never** calls the `unlock` mutation. That is exclusively Phil's action via the Klutch iPhone app.
 
 ### 8.7.4 Safety Layers
 
 | Layer | Protects Against |
 |-------|-----------------|
-| Lifetime limit = current spend + next purchase only | Runaway bot, unexpected charges |
-| Card stays paused until human approves via iPhone app | Race conditions, premature auths, full bot compromise |
-| Idempotency check (read total_spend before setting limit) | Double-bumped limits from retries |
+| StartEndDate rule caps total spend at current + next purchase | Runaway bot, unexpected charges |
+| Card stays locked until human unlocks via iPhone app | Race conditions, premature auths, full bot compromise |
+| Idempotency check (sumTransactions before setting rule) | Double-bumped limits from retries |
 | Preauth buffer (merchant-type-dependent) | Merchant authorization holds exceeding stated price |
-| Post-purchase pause (belt-and-suspenders) | Residual headroom if limit math has rounding errors |
-| iPhone approval gate (out-of-band) | True human-in-the-loop — bot cannot unpause even if fully compromised |
+| Post-purchase lock (belt-and-suspenders) | Residual headroom if limit math has rounding errors |
+| iPhone unlock gate (out-of-band) | True human-in-the-loop — bot cannot unlock even if fully compromised |
 | Append-only audit log | Forensics, reconciliation, dispute resolution |
+| Webhook: TransactionCreatedEvent | Real-time notification of charges for monitoring |
 
 ### 8.7.5 Preauth Buffer Guide
 
@@ -667,34 +715,79 @@ The bot **never** calls the unpause endpoint. That is exclusively Phil's action 
 
 ### 8.7.6 Account Limits to Track
 
-- **Card creation limit** — monthly cap per plan tier (Plus=24, Pro=36, Premium=60). This is why we reuse Everywhere Cards with rolling limits.
-- **Monthly spend limit** — per-account, grows with usage history. Bot should check remaining headroom before initiating a purchase.
-- **Transaction velocity** — 10/day baseline. Bot tracks daily count and warns if approaching the limit.
+- **Card creation limit** — Essentials=10/month (free), Rewards=30/month ($10/mo), Metal=50/month ($20/mo). This is why we reuse cards with rolling limits.
+- **Credit limit** — per-account, check via `account { revolvingLoan { balance, limit } }`.
+- **Transaction velocity** — monitor for fraud flags; Klutch may throttle automated card operations.
 
-### 8.7.7 Implementation Plan
+### 8.7.7 Klutch Account Setup Guide
+
+**Prerequisites:** US resident, 650+ credit score, SSN, US bank account.
+
+**Step-by-step:**
+
+1. **Go to** `https://app.klutch.cards/apply/signup`
+2. **Create account** — enter email and password
+3. **Apply for credit card** — provide:
+   - Full legal name, date of birth, SSN
+   - Home address, phone number
+   - Annual income, employment status
+   - Klutch runs a **soft credit pull** (no impact on score)
+4. **Wait for approval** — most approved instantly, 90% within 1 business day
+5. **Link a bank account** — via Plaid for bill payments. Go to Account → Transfer Sources → Add
+6. **Download the Klutch app** on iPhone:
+   - Search "Klutch Card" in App Store, or: `https://apps.apple.com/us/app/klutch-card/id1563986090`
+   - Log in with your account credentials
+   - Verify you can see your card, lock/unlock it from the app
+7. **Create a virtual card** for bot purchases:
+   - In the app or web: tap "+" / "New Card" → name it "Bot Purchase Card" → select Virtual
+   - Note the card's last 4 digits
+   - **Lock the card immediately** — it should stay locked until the first bot-initiated purchase
+8. **Generate API credentials:**
+   - Go to `https://app.klutch.cards` → My Account → Developers
+   - Create a new API key pair (clientId + secretKey)
+   - Save both securely — the secretKey is shown only once
+9. **Test in sandbox first:**
+   - Use `https://sandbox.klutchcard.com/graphql` to test all operations
+   - Simulate transactions with `sandbox { createTransaction(...) }` mutation
+10. **Provide API credentials to PhilClaw setup:**
+    - clientId and secretKey go into Tier 1 vault as `klutch-card` entry
+    - Card ID goes into the dispatch script config
+
+**Account details:**
+- Card network: **Visa Signature**
+- Issuing bank: Evolve Bank and Trust
+- Annual fee: **$0** (Essentials plan)
+- APR: 5%–25% variable
+- Cashback: 1% base (higher on Rewards/Metal plans)
+- Virtual cards: 10/month on free plan
+
+### 8.7.8 Implementation Plan
 
 | Component | Details |
 |-----------|---------|
-| Privacy.com account | Plus plan ($5/month minimum) for API access |
-| Vault entry | `privacy-com`: type=api, field: `api_key` |
-| UFW egress | `sudo ufw allow out to api.privacy.com port 443` |
-| Dispatch script | `privacy-card.sh` — subcommands: `read-state`, `set-limit`, `pause` |
+| Klutch account | Essentials plan (free) — 10 virtual cards/month, full API access |
+| Vault entry | `klutch-card`: type=api, fields: `client_id`, `secret_key`, `card_id` |
+| UFW egress | `sudo ufw allow out to graphql.klutchcard.com port 443` |
+| Dispatch script | `klutch-card.sh` — subcommands: `auth`, `read-spend`, `set-cap`, `lock`, `read-state` |
 | Container skill | `purchase/SKILL.md` — `/purchase` command |
 | Audit log | Append-only JSONL at `/home/ubuntu/logs/purchases.jsonl` |
+| Webhook | Configure at Klutch Developers → Webhooks for `TransactionCreatedEvent` |
 | Integration | Extends `/shop` flow: discover → validate → purchase |
 
 Audit log schema:
 ```json
-{"ts":"2026-04-15T14:32:01Z","merchant":"Amazon.com","product":"Apple AirPods Pro","intended_amount":189.99,"preauth_buffer_pct":5,"limit_set":199.49,"prior_total_spend":0.00,"actual_charge":189.99,"card_last4":"7742","card_state_after":"PAUSED"}
+{"ts":"2026-04-15T14:32:01Z","merchant":"Amazon.com","product":"Apple AirPods Pro","intended_amount":189.99,"preauth_buffer_pct":5,"rule_limit":199.49,"prior_total_spend":0.00,"actual_charge":189.99,"card_last4":"7742","card_state_after":"LOCKED","rule_id":"rule-abc123"}
 ```
 
-### 8.7.8 Security Notes
+### 8.7.9 Security Notes
 
-- All Privacy.com API calls originate from Tier 1 directly — never dispatched to Tier 2 or Tier 3
-- API key in Tier 1 encrypted vault, never exposed to container or LLM
-- Bot has no unpause capability — cannot authorize charges even if fully compromised
+- All Klutch API calls originate from Tier 1 directly — never dispatched to Tier 2 or Tier 3
+- API credentials (clientId + secretKey) in Tier 1 encrypted vault, never exposed to container or LLM
+- Bot has no unlock capability — cannot authorize charges even if fully compromised
 - Audit log on host filesystem, outside container bind mounts
-- Privacy.com API returns only structured JSON (card state, spend totals, status codes) — no free-form content, no prompt injection surface
+- Klutch GraphQL API returns only structured JSON (card state, spend totals, rule confirmations) — no free-form content, no prompt injection surface
+- Session tokens are ephemeral — generated per-session via `createSessionToken`, not long-lived API keys
+- Sandbox available at `sandbox.klutchcard.com` for testing before live deployment
 
 ## 8.8 Security Properties Summary
 
@@ -704,7 +797,7 @@ Audit log schema:
 | Calendar invites       | SMTP + ICS attachment   | Tier 1      | Same as email                       | None                     |
 | Calendar management    | REST API (Graph/Google) | Tier 1      | graph.microsoft.com, googleapis.com | Structured JSON only     |
 | Internet fax           | REST API or SMTP        | Tier 1      | api.fax.plus or via SMTP            | None (status codes only) |
-| Virtual card purchases | REST API (Privacy.com)  | Tier 1      | api.privacy.com                     | Structured JSON only     |
+| Virtual card purchases | GraphQL (Klutch Card)   | Tier 1      | graphql.klutchcard.com              | Structured JSON only     |
 | SMS (future)           | REST API (Twilio)       | Tier 1      | api.twilio.com                      | None (status codes only) |
 | Physical mail (future) | REST API (Lob)          | Tier 1      | api.lob.com                         | None (tracking ID only)  |
 
