@@ -799,7 +799,173 @@ Audit log schema:
 - Session tokens are ephemeral — generated per-session via `createSessionToken`, not long-lived API keys
 - Sandbox available at `sandbox.klutchcard.com` for testing before live deployment
 
-## 8.8 Security Properties Summary
+## 8.8 Business Purchases via Ramp (Emtera, LLC) — **[PLANNED]**
+
+**[PLANNED — not yet implemented.** Emtera has an existing Ramp corporate card account. This section describes extending PhilClaw to manage business purchases via Ramp's REST API with the same human-approval safety model as personal purchases (Section 8.7).**]**
+
+Business purchasing via Ramp corporate virtual cards for Emtera, LLC expenses. Uses the same human-in-the-loop pattern as Klutch (Section 8.7), but with Ramp's OAuth-scoped API and a limit-as-lock architecture.
+
+### 8.8.1 Architecture
+
+PhilClaw (Tier 1) manages Ramp API calls directly. The bot token is scoped to **`limits:read` + `limits:write` + `transactions:read` ONLY** — the bot has **no `cards:write` scope** and therefore cannot suspend or unsuspend cards. Card suspension is exclusively controlled by Phil via the Ramp iPhone app.
+
+**Limit-as-lock model:** Rather than toggling card lock/unlock, the bot controls the spend limit ceiling. With the limit set to exactly `current_spend`, the card has $0 headroom and auto-declines all charges. To allow a purchase, the bot raises the ceiling by the purchase amount + buffer. After the purchase, the bot resets the ceiling. The card stays active but effectively "locked" by the $0-headroom limit.
+
+**Out-of-band safety gate:** The card also stays **SUSPENDED** by default. Even if the bot sets a high limit (bug or compromise), the card remains suspended and unusable until Phil manually unsuspends it in the Ramp iPhone app. Phil can see the limit amount in the app before unsuspending — a bogus limit is visually obvious.
+
+### 8.8.2 Transaction Flow
+
+```
+1.  Card starts SUSPENDED with limit = current_spend ($0 headroom)
+2.  Bot reads current spend: GET /developer/v1/limits/{id} → balance.total.amount
+    (idempotency — never assume the balance, always read)
+3.  Bot sets limit = current_spend + purchase_amount + preauth_buffer:
+    PATCH /developer/v1/limits/{id} → spending_restrictions.limit.amount
+4.  Card remains SUSPENDED — bot sends Telegram notification:
+      "Ready to purchase: [product] for Emtera
+       Amount: $XX.XX  |  Buffer: +X%  |  Limit set to: $YY.YY
+       ➜ Open Ramp app → verify limit → tap Unsuspend on card [last 4]
+       Reply DONE when unsuspended, or CANCEL to abort."
+5.  Phil opens Ramp iPhone app → sees the limit → verifies it's correct → taps Unsuspend
+6.  Phil replies "DONE" to bot (or bot polls card state — but bot can't read suspension
+    state without cards:read, so Telegram confirmation is the signal)
+7.  Bot executes the purchase (or Phil makes it manually)
+8.  Limit auto-caps — Ramp declines anything above the ceiling
+9.  Phil taps Suspend in Ramp app (re-locks the card)
+10. Bot resets limit to current_spend (belt-and-suspenders, $0 headroom)
+11. Bot logs transaction to append-only audit log
+12. Bot confirms to user via Telegram
+```
+
+### 8.8.3 Ramp REST API — Bot Operations
+
+**Base URL:** `https://api.ramp.com/developer/v1/` (sandbox: `https://demo-api.ramp.com/developer/v1/`)
+
+**Authentication (OAuth 2.0 Client Credentials):**
+```
+POST /developer/v1/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=limits:read limits:write transactions:read
+```
+Returns an opaque access token (valid 10 days).
+
+**Read current spend:**
+```
+GET /developer/v1/limits/{spend_limit_id}
+→ response.balance.total.amount (cleared + pending)
+```
+
+**Set spend limit (raise ceiling for purchase):**
+```
+PATCH /developer/v1/limits/{spend_limit_id}
+{ "spending_restrictions": { "limit": { "amount": 19949, "currency_code": "USD" } } }
+```
+Note: amounts are in cents (19949 = $199.49).
+
+**Reset limit after purchase (re-lock to $0 headroom):**
+Same endpoint, set `limit.amount` to current `balance.total.amount`.
+
+**List transactions:**
+```
+GET /developer/v1/transactions?card_id={card_id}&state=CLEARED,PENDING
+```
+
+The bot **never** calls card suspension/unsuspension endpoints — it has no `cards:write` scope.
+
+### 8.8.4 Three Independent Safety Layers
+
+| Layer | Enforced by | Bot can bypass? |
+|-------|-------------|-----------------|
+| Card suspension (default state) | Ramp server, human-only toggle in iPhone app | **No** — bot has no `cards:write` scope |
+| Spend limit ceiling | Ramp authorizer (declines over-limit charges) | **No** — Ramp enforces server-side |
+| Phil verifies limit in Ramp app before unsuspending | Human eyeball in Ramp app | **No** — out-of-band, separate auth |
+
+**Even if the bot is fully compromised:** It could set the limit to $1M, but the card stays suspended. Phil would see "$1M limit" in the Ramp app and NOT unsuspend. All three layers are enforced by Ramp's infrastructure, not by bot code.
+
+### 8.8.5 Bot Token Scopes (Principle of Least Privilege)
+
+| Scope | Grants | Used for |
+|-------|--------|----------|
+| `limits:read` | Read limit balance and config | Idempotency check (read spend before setting limit) |
+| `limits:write` | Create/modify spend limits | Raise/lower ceiling for purchases |
+| `transactions:read` | Read transaction history | Audit, verification, post-purchase logging |
+| ~~`cards:write`~~ | ~~Suspend/unsuspend/terminate cards~~ | **NOT GRANTED — human-only via Ramp app** |
+| ~~`cards:read`~~ | ~~Read card details~~ | **Not needed — limit balance is sufficient** |
+
+### 8.8.6 Preauth Buffer Guide
+
+Same as Section 8.7.5 (Klutch):
+
+| Merchant Type | Buffer | Rationale |
+|---------------|--------|-----------|
+| Standard retail / online | +5% | Minor rounding, tax variations |
+| Hotels / car rental | +20% | Security deposits, incidental holds |
+| Restaurants (tip expected) | +25% | Gratuity headroom |
+
+### 8.8.7 Ramp Setup Guide
+
+**Prerequisites:** Existing Ramp account for Emtera, LLC.
+
+1. **Log in** to Ramp dashboard at `app.ramp.com`
+2. **Create a Developer App:** Company → Developer → Create App
+   - Grant type: Client Credentials
+   - Scopes: `limits:read`, `limits:write`, `transactions:read` — **do NOT add `cards:write`**
+   - Save the Client ID and Client Secret
+3. **Create a virtual card** for bot purchases:
+   - Cards → Create Card → Virtual → name "Bot Business Purchases"
+   - Set a spend limit (will be dynamically adjusted by the bot)
+   - Note the card's last 4 digits and the `spend_limit_id`
+   - **Suspend the card immediately** — it should stay suspended until the first purchase
+4. **Download the Ramp app** on iPhone (if not already installed)
+   - Verify you can see the card, suspend/unsuspend it, and view the limit
+5. **Test in sandbox:** Use `demo-api.ramp.com` with sandbox credentials
+6. **Provide credentials to PhilClaw setup:**
+   - Client ID + Client Secret → vault entry `ramp-business`
+   - Spend limit ID → dispatch script config
+
+### 8.8.8 Implementation Plan
+
+| Component | Details |
+|-----------|---------|
+| Ramp account | Existing Emtera, LLC account |
+| Vault entry | `ramp-business`: type=oauth, fields: `client_id`, `client_secret`, `spend_limit_id` |
+| UFW egress | `sudo ufw allow out to api.ramp.com port 443` |
+| Dispatch script | `ramp-card.sh` — subcommands: `auth`, `read-spend`, `set-limit`, `read-txns` |
+| Container skill | `business-purchase/SKILL.md` — `/biz-purchase` command |
+| Audit log | Append-only JSONL at `/home/ubuntu/logs/business-purchases.jsonl` |
+| Webhook | `POST /developer/v1/webhooks` for `transactions.authorized` event |
+| Integration | Standalone or linked to `/shop` flow with "personal vs business?" prompt |
+
+Audit log schema:
+```json
+{"ts":"2026-04-15T14:32:01Z","merchant":"Digi-Key","product":"SMA connectors x50","intended_amount":87.50,"preauth_buffer_pct":5,"limit_set":9188,"prior_total_spend":0,"actual_charge":8750,"card_last4":"4419","limit_id":"lim_abc123","account":"Emtera"}
+```
+
+### 8.8.9 Security Notes
+
+- All Ramp API calls originate from Tier 1 directly — never dispatched to Tier 2 or Tier 3
+- OAuth credentials (client_id + client_secret) in Tier 1 encrypted vault, never exposed to container or LLM
+- Bot token has **no card control** — cannot suspend, unsuspend, or terminate cards even if fully compromised
+- Three safety layers all enforced by Ramp's infrastructure, not bot code
+- Ramp API returns only structured JSON — no free-form content, no prompt injection surface
+- OAuth tokens are opaque and expire after 10 days — auto-refreshed by dispatch script
+- Sandbox at `demo-api.ramp.com` for testing before live deployment
+- Separate audit log from personal purchases (Klutch) for accounting/tax separation
+
+### 8.8.10 Klutch vs Ramp — When to Use Which
+
+| | Klutch Spend Card (8.7) | Ramp (8.8) |
+|---|---|---|
+| **Account** | Personal (Phil) | Business (Emtera, LLC) |
+| **Card type** | Prepaid Visa (collateralized) | Corporate Visa (credit line) |
+| **Use for** | Personal purchases | Business expenses |
+| **Safety gate** | Card lock — human unlocks in Klutch app | Card suspension — human unsuspends in Ramp app |
+| **Bot controls** | Spend cap rules + card lock | Spend limit ceiling (no card control) |
+| **API** | GraphQL | REST (OAuth 2.0) |
+| **Tax treatment** | Personal expense | Business deduction |
+
+## 8.9 Security Properties Summary
 
 | Channel            | Protocol            | Runs On | Egress Target                   | Inbound Content Risk |
 |------------------------|-------------------------|-------------|-------------------------------------|--------------------------|
@@ -807,7 +973,8 @@ Audit log schema:
 | Calendar invites       | SMTP + ICS attachment   | Tier 1      | Same as email                       | None                     |
 | Calendar management    | REST API (Graph/Google) | Tier 1      | graph.microsoft.com, googleapis.com | Structured JSON only     |
 | Internet fax           | REST API or SMTP        | Tier 1      | api.fax.plus or via SMTP            | None (status codes only) |
-| Virtual card purchases | GraphQL (Klutch Card)   | Tier 1      | graphql.klutchcard.com              | Structured JSON only     |
+| Virtual card (personal)| GraphQL (Klutch Card)   | Tier 1      | graphql.klutchcard.com              | Structured JSON only     |
+| Virtual card (business)| REST/OAuth (Ramp)       | Tier 1      | api.ramp.com                        | Structured JSON only     |
 | SMS (future)           | REST API (Twilio)       | Tier 1      | api.twilio.com                      | None (status codes only) |
 | Physical mail (future) | REST API (Lob)          | Tier 1      | api.lob.com                         | None (tracking ID only)  |
 
