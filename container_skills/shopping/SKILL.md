@@ -49,19 +49,19 @@ ssh -F /workspace/extra/agent-ssh/config host.docker.internal "bash /home/ubuntu
 
 **Present validated results** showing: exact price, delivery info, availability, rating, Prime status.
 
-### Step 3 — Quick Buy Link
+### Step 3 — Product Link (ONLY for validated or previously-purchased ASINs)
 
-After presenting validated results, include an **Add to Cart** link for the recommended product:
+After presenting validated results (Step 2) or previous purchases (Step 0), include a product link:
 
 ```
-🛒 Tap to add to cart: https://www.amazon.com/gp/aws/cart/add.html?ASIN=<ASIN>&Quantity=1
+🔗 https://www.amazon.com/dp/<ASIN>
 ```
 
-Replace `<ASIN>` with the actual ASIN from the validation results. This link opens the Amazon app on iPhone and adds the item to cart — Phil just taps "Proceed to checkout."
+**CRITICAL: NEVER include a /dp/ link for an ASIN that has NOT been validated by product-validate.sh or found in order history.** Discovery ASINs from Step 1 (Gemini search) are frequently wrong, hallucinated, or outdated. Only link ASINs that:
+1. Came from `product-validate.sh` (Step 2) — confirmed to exist on Amazon, OR
+2. Came from `order-history-search.sh` (Step 0) — known good from past purchases
 
-If multiple products were validated, include a cart link for each.
-
-**This is the ONLY type of URL you are allowed to include in messages** — a cart link you construct yourself from a verified ASIN. Never include URLs from Tier 3 output.
+If you only have discovery results (Step 1) and haven't validated yet, show the product name and ASIN but do NOT include a link. Offer to validate first.
 
 ## How to present results
 
